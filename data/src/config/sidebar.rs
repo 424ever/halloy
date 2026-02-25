@@ -24,6 +24,7 @@ pub struct Sidebar {
     pub user_menu: UserMenu,
     pub padding: Padding,
     pub spacing: Spacing,
+    pub order_channels_by: OrderChannelsBy,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -52,7 +53,7 @@ where
                 Ok(ServerIcon::Size(value))
             } else {
                 Err(serde::de::Error::invalid_value(
-                    serde::de::Unexpected::Unsigned(value as u64),
+                    serde::de::Unexpected::Unsigned(u64::from(value)),
                     &"a positive integer",
                 ))
             }
@@ -80,7 +81,7 @@ pub struct Padding {
 
 impl Default for Padding {
     fn default() -> Self {
-        Self { buffer: [5, 5] }
+        Self { buffer: [4, 4] }
     }
 }
 
@@ -92,7 +93,7 @@ pub struct Spacing {
 
 impl Default for Spacing {
     fn default() -> Self {
-        Self { server: 12 }
+        Self { server: 6 }
     }
 }
 
@@ -100,15 +101,11 @@ impl Default for Spacing {
 #[serde(default)]
 pub struct UserMenu {
     pub enabled: bool,
-    pub show_new_version_indicator: bool,
 }
 
 impl Default for UserMenu {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            show_new_version_indicator: true,
-        }
+        Self { enabled: true }
     }
 }
 
@@ -244,4 +241,12 @@ pub enum OrderBy {
     #[default]
     Alpha,
     Config,
+}
+
+#[derive(Debug, Copy, Clone, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum OrderChannelsBy {
+    #[default]
+    Name,
+    NameAndPrefix,
 }

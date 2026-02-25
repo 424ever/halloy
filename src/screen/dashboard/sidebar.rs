@@ -3,15 +3,16 @@ use std::time::Duration;
 use data::config::{self, Config, sidebar};
 use data::dashboard::{BufferAction, BufferFocusedAction};
 use data::{Version, buffer, file_transfer, history, isupport, server, target};
+use iced::widget::text::Shaping;
 use iced::widget::{
     Column, Row, Scrollable, Space, button, column, container, pane_grid, row,
-    rule, scrollable, space, stack, text,
+    rule, scrollable, space, stack,
 };
 use iced::{Alignment, Length, Padding, Task, padding};
 use tokio::time;
 
 use super::{Focus, Panes, Server};
-use crate::widget::{Element, Text, context_menu, double_pass};
+use crate::widget::{Element, Text, context_menu, double_pass, text};
 use crate::{Theme, font, icon, platform_specific, theme, window};
 
 const CONFIG_RELOAD_DELAY: Duration = Duration::from_secs(1);
@@ -39,6 +40,8 @@ pub enum Message {
     MarkAsRead(buffer::Upstream),
     MarkServerAsRead(Server),
     QuitApplication,
+    Connect(Server),
+    Remove(Server),
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +65,8 @@ pub enum Event {
     MarkAsRead(buffer::Upstream),
     MarkServerAsRead(Server),
     QuitApplication,
+    Connect(Server),
+    Remove(Server),
 }
 
 #[derive(Clone)]
@@ -159,6 +164,12 @@ impl Sidebar {
             Message::OpenConfigFile => {
                 (Task::none(), Some(Event::OpenConfigFile))
             }
+            Message::Connect(server) => {
+                (Task::none(), Some(Event::Connect(server)))
+            }
+            Message::Remove(server) => {
+                (Task::none(), Some(Event::Remove(server)))
+            }
         }
     }
 
@@ -175,21 +186,15 @@ impl Sidebar {
             .padding(5)
             .width(Length::Shrink);
 
-        let menu = Menu::list(
-            config.sidebar.user_menu.show_new_version_indicator
-                && version.is_old(),
-            config.file_transfer.enabled,
-        );
+        let menu = Menu::list(version.is_old(), config.file_transfer.enabled);
 
         let logs_has_unread = history.has_unread(&history::Kind::Logs);
 
         // Show notification dot if theres a new version, if there're transfers,
         // or if the logs have unread messages.
-        let show_notification_dot =
-            (config.sidebar.user_menu.show_new_version_indicator
-                && version.is_old())
-                || (!file_transfers.is_empty() && config.file_transfer.enabled)
-                || logs_has_unread;
+        let show_notification_dot = version.is_old()
+            || (!file_transfers.is_empty() && config.file_transfer.enabled)
+            || logs_has_unread;
 
         if menu.is_empty() {
             base.into()
@@ -204,26 +209,32 @@ impl Sidebar {
                     move |menu, length| {
                         let context_button =
                             |title: Text<'a>,
-                             keybind: Option<&data::shortcut::KeyBind>,
+                             keybinds: Option<&data::shortcut::KeyBinds>,
                              icon: Text<'a>,
                              message: Message| {
-                                let keybind = keybind.and_then(|kb| match kb {
-                                    data::shortcut::KeyBind::Bind {
-                                        ..
-                                    } => Some(
-                                        text(format!("({kb})"))
-                                            .shaping(text::Shaping::Advanced)
-                                            .size(theme::TEXT_SIZE - 2.0)
-                                            .style(theme::text::secondary)
-                                            .font_maybe(
-                                                theme::font_style::secondary(
-                                                    theme,
-                                                )
-                                                .map(font::get),
-                                            ),
-                                    ),
-                                    data::shortcut::KeyBind::Unbind => None,
-                                });
+                                let title = title.line_height(
+                                    theme::line_height(&config.font),
+                                );
+                                let keybind =
+                                    keybinds.and_then(|key_binds| match key_binds
+                                        .primary()
+                                    {
+                                        Some(kb @ data::shortcut::KeyBind::Bind {
+                                            ..
+                                        }) => Some(
+                                            text(format!("({kb})"))
+                                                .shaping(Shaping::Advanced)
+                                                .size(theme::TEXT_SIZE - 2.0)
+                                                .style(theme::text::secondary)
+                                                .font_maybe(
+                                                    theme::font_style::secondary(
+                                                        theme,
+                                                    )
+                                                    .map(font::get),
+                                                ),
+                                        ),
+                                        _ => None,
+                                    });
 
                                 button(
                                     row![
@@ -707,16 +718,20 @@ impl Menu {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Entry {
+    Context,
+    HorizontalRule,
+    Connect,
     Close(window::Id, pane_grid::Pane),
     CloseAllQueries,
-    Detach,
-    Leave,
     MarkAsRead,
     MarkServerAsRead,
     NewPane,
     Popout,
     Replace,
     Swap(window::Id, pane_grid::Pane),
+    Detach,
+    Leave,
+    Remove,
 }
 
 impl Entry {
@@ -725,6 +740,7 @@ impl Entry {
         num_panes: usize,
         open: Option<(window::Id, pane_grid::Pane)>,
         focus: Focus,
+        connected: bool,
         supports_detach: bool,
     ) -> Vec<Self> {
         use Entry::*;
@@ -732,8 +748,14 @@ impl Entry {
 
         itertools::chain!(
             match buffer {
-                buffer::Upstream::Server(_) =>
-                    vec![CloseAllQueries, MarkServerAsRead],
+                buffer::Upstream::Server(_) => if connected {
+                    vec![CloseAllQueries, MarkServerAsRead]
+                } else {
+                    vec![Connect, Remove]
+                }
+                .into_iter()
+                .chain(vec![Context, HorizontalRule])
+                .collect_vec(),
                 buffer::Upstream::Channel(_, _) => vec![],
                 buffer::Upstream::Query(_, _) => vec![],
             },
@@ -755,7 +777,7 @@ impl Entry {
                     )
                     .collect_vec(),
             },
-            vec![Leave]
+            if connected { vec![Leave] } else { vec![] },
         )
         .sorted()
         .collect_vec()
@@ -927,31 +949,35 @@ fn upstream_buffer_button<'a>(
                         text(network.name.to_string())
                             .style(buffer_title_style)
                             .font_maybe(buffer_title_font.clone())
-                            .shaping(text::Shaping::Advanced),
+                            .shaping(Shaping::Advanced),
                         Space::new().width(6),
                         text(server.name.to_string())
                             .style(theme::text::secondary)
                             .font_maybe(buffer_title_font)
-                            .shaping(text::Shaping::Advanced),
+                            .shaping(Shaping::Advanced),
                     ])
                 } else {
                     text(server.to_string())
                         .style(buffer_title_style)
                         .font_maybe(buffer_title_font)
-                        .shaping(text::Shaping::Advanced)
+                        .shaping(Shaping::Advanced)
                         .into()
                 }
             }
-            buffer::Upstream::Channel(_, channel) => text(channel.to_string())
-                .style(buffer_title_style)
-                .font_maybe(buffer_title_font)
-                .shaping(text::Shaping::Advanced)
-                .into(),
-            buffer::Upstream::Query(_, query) => text(query.to_string())
-                .style(buffer_title_style)
-                .font_maybe(buffer_title_font)
-                .shaping(text::Shaping::Advanced)
-                .into(),
+            buffer::Upstream::Channel(_, channel) => {
+                text(channel.to_string())
+                    .style(buffer_title_style)
+                    .font_maybe(buffer_title_font)
+                    .shaping(Shaping::Advanced)
+                    .into()
+            }
+            buffer::Upstream::Query(_, query) => {
+                text(query.to_string())
+                    .style(buffer_title_style)
+                    .font_maybe(buffer_title_font)
+                    .shaping(Shaping::Advanced)
+                    .into()
+            }
         })
         .padding(Padding::default().left(left_padding))
         .align_y(iced::Alignment::Center),
@@ -990,7 +1016,21 @@ fn upstream_buffer_button<'a>(
                         if let Some((window, pane)) = open {
                             Message::Focus(window, pane)
                         } else {
-                            match config.actions.sidebar.buffer {
+                            let action = match &buffer {
+                                buffer::Upstream::Channel(_, _) => {
+                                    config.actions.sidebar.channel.unwrap_or(
+                                        config.actions.sidebar.buffer,
+                                    )
+                                }
+                                buffer::Upstream::Query(_, _) => {
+                                    config.actions.sidebar.query.unwrap_or(
+                                        config.actions.sidebar.buffer,
+                                    )
+                                }
+                                _ => config.actions.sidebar.buffer,
+                            };
+
+                            match action {
                                 BufferAction::NewPane => {
                                     Message::New(buffer.clone())
                                 }
@@ -1006,10 +1046,16 @@ fn upstream_buffer_button<'a>(
                 }
             });
 
-    let entries =
-        Entry::list(&buffer, panes.len(), open, focus, supports_detach);
+    let entries = Entry::list(
+        &buffer,
+        panes.len(),
+        open,
+        focus,
+        connected,
+        supports_detach,
+    );
 
-    if entries.is_empty() || !connected {
+    if entries.is_empty() {
         base.into()
     } else {
         context_menu(
@@ -1085,12 +1131,85 @@ fn upstream_buffer_button<'a>(
                     ),
                     Entry::Leave => (
                         match &buffer {
-                            buffer::Upstream::Server(_) => "Leave server",
+                            buffer::Upstream::Server(_) => {
+                                "Disconnect from server"
+                            }
                             buffer::Upstream::Channel(_, _) => "Leave channel",
                             buffer::Upstream::Query(_, _) => "Close query",
                         },
                         Some(Message::Leave(buffer.clone())),
                     ),
+                    Entry::Connect => (
+                        "Connect to server",
+                        Some(Message::Connect(buffer.server().clone())),
+                    ),
+                    Entry::Remove => (
+                        "Remove server from sidebar",
+                        Some(Message::Remove(buffer.server().clone())),
+                    ),
+                    Entry::Context => {
+                        return container(
+                            row![
+                                text(match &buffer {
+                                    buffer::Upstream::Server(server) => {
+                                        if let Some(network) = &server.network {
+                                            network.name.to_string()
+                                        } else {
+                                            format!("{server}")
+                                        }
+                                    }
+                                    buffer::Upstream::Channel(_, channel) => {
+                                        format!("{channel}")
+                                    }
+                                    buffer::Upstream::Query(_, query) => {
+                                        format!("{query}")
+                                    }
+                                })
+                                .style(theme::text::primary)
+                                .font_maybe(
+                                    theme::font_style::primary(theme)
+                                        .map(font::get),
+                                ),
+                                Space::new().width(6),
+                                match &buffer {
+                                    buffer::Upstream::Server(server) => {
+                                        if server.network.is_some() {
+                                            Some(server.name.to_string())
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    buffer::Upstream::Channel(server, _) => {
+                                        Some(format!("{server}"))
+                                    }
+                                    buffer::Upstream::Query(server, _) => {
+                                        Some(format!("{server}"))
+                                    }
+                                }
+                                .map(
+                                    |secondary_name| text(secondary_name)
+                                        .style(theme::text::secondary)
+                                        .font_maybe(
+                                            theme::font_style::secondary(theme)
+                                                .map(font::get)
+                                        ),
+                                )
+                            ]
+                            .width(length),
+                        )
+                        .padding(config.context_menu.padding.entry)
+                        .into();
+                    }
+                    Entry::HorizontalRule => match length {
+                        Length::Fill => {
+                            return container(rule::horizontal(1))
+                                .padding([0, 6])
+                                .into();
+                        }
+                        _ => {
+                            return Space::new().width(length).height(1).into();
+                        }
+                    },
                 };
 
                 button(text(content))

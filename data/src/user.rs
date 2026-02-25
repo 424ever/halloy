@@ -9,7 +9,7 @@ use itertools::sorted;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::config::buffer::UsernameFormat;
+use crate::config::buffer::{AccessLevelFormat, UsernameFormat};
 use crate::{isupport, mode};
 
 #[derive(Debug, Clone)]
@@ -73,10 +73,9 @@ impl ChannelUsers {
     }
 
     pub fn insert(&mut self, user: User) -> bool {
-        // TODO(pounce, #1070) change to `insert_sorted_by_key` when merged
-        let (Ok(i) | Err(i)) =
-            self.0.binary_search_by_key(&user.key(), User::key);
-        self.0.insert_before(i, user).1
+        self.0
+            .insert_sorted_by(user, |a, b| a.key().cmp(&b.key()))
+            .1
     }
 
     pub fn remove(&mut self, user: &User) -> bool {
@@ -201,13 +200,26 @@ impl User {
 
     pub fn display(
         &self,
-        with_access_levels: bool,
+        with_access_levels: AccessLevelFormat,
         truncate: Option<u16>,
     ) -> String {
-        let mut nickname = if with_access_levels {
-            format!("{}{}", self.highest_access_level(), self.nickname())
-        } else {
-            self.nickname().to_string()
+        let mut nickname = match with_access_levels {
+            AccessLevelFormat::All => {
+                if self.access_levels.is_empty() {
+                    self.nickname().to_string()
+                } else {
+                    self.access_levels.iter().fold(
+                        self.nickname().to_string(),
+                        |display, access_level| {
+                            format!("{access_level}{display}")
+                        },
+                    )
+                }
+            }
+            AccessLevelFormat::Highest => {
+                format!("{}{}", self.highest_access_level(), self.nickname())
+            }
+            AccessLevelFormat::None => self.nickname().to_string(),
         };
 
         if let Some(len) = truncate {

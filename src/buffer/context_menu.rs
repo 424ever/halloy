@@ -2,10 +2,10 @@ use chrono::{DateTime, Local, Utc};
 use data::dashboard::BufferAction;
 use data::user::Nick;
 use data::{Config, Server, User, config, ctcp, isupport, message, target};
-use iced::widget::{Space, button, column, container, row, rule, text};
+use iced::widget::{Space, button, column, container, row, rule};
 use iced::{Length, Padding};
 
-use crate::widget::{Element, context_menu, double_pass};
+use crate::widget::{Element, context_menu, double_pass, text};
 use crate::{Theme, font, theme, widget};
 
 pub enum Context<'a> {
@@ -16,7 +16,10 @@ pub enum Context<'a> {
         user: &'a User,
         current_user: Option<&'a User>,
     },
-    Url(&'a String),
+    Url {
+        url: &'a str,
+        message: Option<message::Hash>,
+    },
     Timestamp(&'a DateTime<Utc>),
     NotSentMessage(&'a DateTime<Utc>, &'a message::Hash),
 }
@@ -37,6 +40,8 @@ pub enum Entry {
     // url context
     CopyUrl,
     OpenUrl,
+    HidePreview,
+    ShowPreview,
     // timestamp context
     Timestamp,
     // not sent message context
@@ -57,8 +62,19 @@ impl Entry {
         vec![Entry::Timestamp]
     }
 
-    pub fn url_list() -> Vec<Self> {
-        vec![Entry::CopyUrl, Entry::OpenUrl]
+    pub fn url_list(preview_hidden: Option<bool>) -> Vec<Self> {
+        let mut entries = vec![Entry::CopyUrl, Entry::OpenUrl];
+
+        if let Some(preview_hidden) = preview_hidden {
+            entries.push(Entry::HorizontalRule);
+            entries.push(if preview_hidden {
+                Entry::ShowPreview
+            } else {
+                Entry::HidePreview
+            });
+        }
+
+        entries
     }
 
     pub fn user_list(
@@ -321,8 +337,8 @@ impl Entry {
                     config,
                 )
             }
-            (Entry::CopyUrl, Context::Url(url)) => {
-                let message = Message::CopyUrl(url.clone());
+            (Entry::CopyUrl, Context::Url { url, .. }) => {
+                let message = Message::CopyUrl(url.to_string());
 
                 menu_button(
                     "Copy URL".to_string(),
@@ -332,12 +348,38 @@ impl Entry {
                     config,
                 )
             }
-            (Entry::OpenUrl, Context::Url(url)) => {
-                let message = Message::OpenUrl(url.clone());
+            (Entry::OpenUrl, Context::Url { url, .. }) => {
+                let message = Message::OpenUrl(url.to_string());
 
                 menu_button(
                     "Open URL".to_string(),
                     Some(message),
+                    length,
+                    theme,
+                    config,
+                )
+            }
+            (Entry::HidePreview, Context::Url { url, message }) => {
+                let message = message.map(|message| {
+                    Message::HidePreview(message, url.to_string())
+                });
+
+                menu_button(
+                    "Hide Preview".to_string(),
+                    message,
+                    length,
+                    theme,
+                    config,
+                )
+            }
+            (Entry::ShowPreview, Context::Url { url, message }) => {
+                let message = message.map(|message| {
+                    Message::ShowPreview(message, url.to_string())
+                });
+
+                menu_button(
+                    "Show Preview".to_string(),
+                    message,
                     length,
                     theme,
                     config,
@@ -406,6 +448,8 @@ pub enum Message {
     CtcpRequest(ctcp::Command, Server, Nick, Option<String>),
     CopyUrl(String),
     OpenUrl(String),
+    HidePreview(message::Hash, String),
+    ShowPreview(message::Hash, String),
     CopyTimestamp(DateTime<Utc>, Option<String>),
     #[allow(clippy::enum_variant_names)]
     DeleteMessage(DateTime<Utc>, message::Hash),
@@ -424,6 +468,8 @@ pub enum Event {
     CtcpRequest(ctcp::Command, Server, Nick, Option<String>),
     CopyUrl(String),
     OpenUrl(String),
+    HidePreview(message::Hash, String),
+    ShowPreview(message::Hash, String),
     CopyTimestamp(DateTime<Utc>, Option<String>),
     DeleteMessage(DateTime<Utc>, message::Hash),
     ResendMessage(DateTime<Utc>, message::Hash),
@@ -446,6 +492,8 @@ pub fn update(message: Message) -> Event {
         }
         Message::CopyUrl(url) => Event::CopyUrl(url),
         Message::OpenUrl(url) => Event::OpenUrl(url),
+        Message::HidePreview(message, url) => Event::HidePreview(message, url),
+        Message::ShowPreview(message, url) => Event::ShowPreview(message, url),
         Message::CopyTimestamp(date_time, format) => {
             Event::CopyTimestamp(date_time, format)
         }
@@ -589,7 +637,7 @@ fn menu_button(
 fn right_justified_padding(config: &Config) -> Padding {
     let padding = config.context_menu.padding.entry;
     Padding::from(padding)
-        .right(padding[1] as f32 + double_pass::horizontal_expansion())
+        .right(f32::from(padding[1]) + double_pass::horizontal_expansion())
 }
 
 fn user_info<'a>(

@@ -63,12 +63,15 @@ pub struct Server {
     pub channels: Vec<String>,
     /// A mapping of channel names to keys for join-on-connect.
     pub channel_keys: HashMap<String, String>,
+    /// A list of queries to add to the sidebar on connection.
+    pub queries: Vec<String>,
     /// The amount of inactivity in seconds before the client will ping the server.
     pub ping_time: u64,
     /// The amount of time in seconds for a client to reconnect due to no ping response.
     pub ping_timeout: u64,
     /// The amount of time in seconds before attempting to reconnect to the server when disconnected.
-    pub reconnect_delay: u64,
+    #[serde(deserialize_with = "deserialize_duration_from_secs")]
+    pub reconnect_delay: Duration,
     /// Whether the client should use NickServ GHOST to reclaim its primary nickname if it is in
     /// use. This has no effect if `nick_password` is not set.
     pub should_ghost: bool,
@@ -88,7 +91,7 @@ pub struct Server {
     #[serde(
         deserialize_with = "deserialize_path_buf_with_path_transformations_maybe"
     )]
-    root_cert_path: Option<PathBuf>,
+    pub root_cert_path: Option<PathBuf>,
     /// Sasl authentication
     pub sasl: Option<Sasl>,
     /// Commands which are executed once connected.
@@ -107,6 +110,7 @@ pub struct Server {
     pub order: u16,
     pub proxy: Option<config::Proxy>,
     pub confirm_message_delivery: ConfirmMessageDelivery,
+    pub autoconnect: bool,
 }
 
 impl Server {
@@ -202,9 +206,10 @@ impl Default for Server {
             filters: Option::default(),
             channels: Vec::default(),
             channel_keys: HashMap::default(),
+            queries: Vec::default(),
             ping_time: 180,
             ping_timeout: 20,
-            reconnect_delay: 10,
+            reconnect_delay: Duration::from_secs(10),
             should_ghost: Default::default(),
             ghost_sequence: vec!["REGAIN".into()],
             umodes: Option::default(),
@@ -221,6 +226,7 @@ impl Default for Server {
             order: 0,
             proxy: None,
             confirm_message_delivery: ConfirmMessageDelivery::default(),
+            autoconnect: true,
         }
     }
 }
@@ -250,6 +256,8 @@ pub enum Sasl {
         password_file_first_line_only: Option<bool>,
         /// Account password command
         password_command: Option<String>,
+        /// Disconnect from server if SASL authentication fails. Defaults to `true`.
+        disconnect_on_failure: Option<bool>,
     },
     External {
         /// The path to PEM encoded X509 user certificate for external auth
@@ -263,10 +271,25 @@ pub enum Sasl {
             deserialize_with = "deserialize_path_buf_with_path_transformations_maybe"
         )]
         key: Option<PathBuf>,
+        /// Disconnect from server if SASL authentication fails. Defaults to `true`.
+        disconnect_on_failure: Option<bool>,
     },
 }
 
 impl Sasl {
+    pub fn disconnect_on_failure(&self) -> bool {
+        match self {
+            Sasl::Plain {
+                disconnect_on_failure,
+                ..
+            }
+            | Sasl::External {
+                disconnect_on_failure,
+                ..
+            } => disconnect_on_failure.unwrap_or(true),
+        }
+    }
+
     pub fn command(&self) -> &'static str {
         match self {
             Sasl::Plain { .. } => "PLAIN",
@@ -529,4 +552,15 @@ where
     } else {
         Ok(Duration::from_secs(seconds))
     }
+}
+
+fn deserialize_duration_from_secs<'de, D>(
+    deserializer: D,
+) -> Result<Duration, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let seconds: u64 = Deserialize::deserialize(deserializer)?;
+
+    Ok(Duration::from_secs(seconds))
 }

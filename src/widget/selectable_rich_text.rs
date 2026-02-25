@@ -84,7 +84,7 @@ where
         Self {
             spans: Cow::default(),
             size: None,
-            line_height: LineHeight::default(),
+            line_height: crate::font::line_height(),
             width: Length::Shrink,
             height: Length::Shrink,
             font: None,
@@ -460,6 +460,7 @@ where
                     align_y: self.align_y,
                     shaping: Shaping::Advanced,
                     wrapping: text::Wrapping::WordOrGlyph,
+                    ellipsis: text::Ellipsis::default(),
                     hint_factor: renderer.scale_factor(),
                 };
 
@@ -870,6 +871,7 @@ where
             align_y,
             shaping: Shaping::Advanced,
             wrapping: text::Wrapping::WordOrGlyph,
+            ellipsis: text::Ellipsis::default(),
             hint_factor: renderer.scale_factor(),
         };
 
@@ -898,6 +900,7 @@ where
                 align_y,
                 shaping: Shaping::Advanced,
                 wrapping: text::Wrapping::WordOrGlyph,
+                ellipsis: text::Ellipsis::default(),
                 hint_factor: renderer.scale_factor(),
             }) {
                 text::Difference::None => {}

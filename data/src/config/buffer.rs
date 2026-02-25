@@ -262,43 +262,104 @@ pub struct ServerMessages {
     pub wallops: ServerMessage,
     pub kick: ServerMessage,
     pub change_topic: ServerMessage,
+    pub default: ServerMessageDefault,
 }
 
 impl ServerMessages {
-    pub fn get(&self, server: &source::Server) -> Option<&ServerMessage> {
-        match server.kind() {
-            source::server::Kind::ReplyTopic => Some(&self.topic),
-            source::server::Kind::Join => Some(&self.join),
-            source::server::Kind::Part => Some(&self.part),
-            source::server::Kind::Quit => Some(&self.quit),
-            source::server::Kind::ChangeHost => Some(&self.change_host),
-            source::server::Kind::ChangeMode => Some(&self.change_mode),
-            source::server::Kind::ChangeNick => Some(&self.change_nick),
-            source::server::Kind::MonitoredOnline => {
-                Some(&self.monitored_online)
-            }
-            source::server::Kind::MonitoredOffline => {
-                Some(&self.monitored_offline)
-            }
+    pub fn get(&self, kind: source::server::Kind) -> &ServerMessage {
+        match kind {
+            source::server::Kind::ReplyTopic => &self.topic,
+            source::server::Kind::Join => &self.join,
+            source::server::Kind::Part => &self.part,
+            source::server::Kind::Quit => &self.quit,
+            source::server::Kind::ChangeHost => &self.change_host,
+            source::server::Kind::ChangeMode => &self.change_mode,
+            source::server::Kind::ChangeNick => &self.change_nick,
+            source::server::Kind::MonitoredOnline => &self.monitored_online,
+            source::server::Kind::MonitoredOffline => &self.monitored_offline,
             source::server::Kind::StandardReply(
                 source::server::StandardReply::Fail,
-            ) => Some(&self.standard_reply_fail),
+            ) => &self.standard_reply_fail,
             source::server::Kind::StandardReply(
                 source::server::StandardReply::Warn,
-            ) => Some(&self.standard_reply_warn),
+            ) => &self.standard_reply_warn,
             source::server::Kind::StandardReply(
                 source::server::StandardReply::Note,
-            ) => Some(&self.standard_reply_note),
-            source::server::Kind::WAllOps => Some(&self.wallops),
-            source::server::Kind::Kick => Some(&self.kick),
-            source::server::Kind::ChangeTopic => Some(&self.change_topic),
+            ) => &self.standard_reply_note,
+            source::server::Kind::WAllOps => &self.wallops,
+            source::server::Kind::Kick => &self.kick,
+            source::server::Kind::ChangeTopic => &self.change_topic,
         }
     }
 
-    pub fn dimmed(&self, server: Option<&source::Server>) -> Option<&Dimmed> {
-        server.and_then(|server| {
-            self.get(server).and_then(|kind| kind.dimmed.as_ref())
-        })
+    pub fn dimmed(
+        &self,
+        kind: Option<source::server::Kind>,
+    ) -> Option<&Dimmed> {
+        kind.and_then(|kind| self.get(kind).dimmed.as_ref())
+            .or(self.default.dimmed.as_ref())
+    }
+
+    pub fn enabled(&self, kind: Option<source::server::Kind>) -> bool {
+        if let Some(kind) = kind
+            && let Some(enabled) = self.get(kind).enabled
+        {
+            enabled
+        } else {
+            self.default.enabled
+        }
+    }
+
+    pub fn exclude(
+        &self,
+        kind: Option<source::server::Kind>,
+    ) -> Option<&Inclusivities> {
+        kind.and_then(|kind| self.get(kind).exclude.as_ref())
+            .or(self.default.exclude.as_ref())
+    }
+
+    pub fn include(
+        &self,
+        kind: Option<source::server::Kind>,
+    ) -> Option<&Inclusivities> {
+        kind.and_then(|kind| self.get(kind).include.as_ref())
+            .or(self.default.include.as_ref())
+    }
+
+    pub fn should_send_message(
+        &self,
+        kind: Option<source::server::Kind>,
+        nick: Option<NickRef>,
+        channel: &target::Channel,
+        server: &Server,
+        casemapping: isupport::CaseMap,
+    ) -> bool {
+        // Server Message is not enabled.
+        if !self.enabled(kind) {
+            return false;
+        }
+
+        is_target_channel_included(
+            self.include(kind),
+            self.exclude(kind),
+            nick,
+            channel,
+            server,
+            casemapping,
+        )
+    }
+
+    pub fn smart(&self, kind: Option<source::server::Kind>) -> Option<i64> {
+        kind.and_then(|kind| self.get(kind).smart)
+            .or(self.default.smart)
+    }
+
+    pub fn username_format(
+        &self,
+        kind: Option<source::server::Kind>,
+    ) -> UsernameFormat {
+        kind.and_then(|kind| self.get(kind).username_format)
+            .unwrap_or(self.default.username_format)
     }
 }
 
@@ -307,6 +368,7 @@ impl ServerMessages {
 pub struct Condensation {
     pub messages: HashSet<CondensationMessage>,
     pub format: CondensationFormat,
+    pub icon: CondensationIcon,
     #[serde(deserialize_with = "deserialize_dimmed_maybe")]
     pub dimmed: Option<Dimmed>,
 }
@@ -314,8 +376,15 @@ pub struct Condensation {
 impl Default for Condensation {
     fn default() -> Self {
         Self {
-            messages: HashSet::new(),
+            messages: HashSet::from([
+                CondensationMessage::ChangeHost,
+                CondensationMessage::ChangeNick,
+                CondensationMessage::Join,
+                CondensationMessage::Part,
+                CondensationMessage::Quit,
+            ]),
             format: CondensationFormat::default(),
+            icon: CondensationIcon::default(),
             dimmed: Some(Dimmed(None)),
         }
     }
@@ -377,9 +446,30 @@ pub enum CondensationFormat {
     Full,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CondensationIcon {
+    #[default]
+    None,
+    Chevron,
+    Dot,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default)]
 pub struct ServerMessage {
+    pub enabled: Option<bool>,
+    pub smart: Option<i64>,
+    pub username_format: Option<UsernameFormat>,
+    pub exclude: Option<Inclusivities>,
+    pub include: Option<Inclusivities>,
+    #[serde(deserialize_with = "deserialize_dimmed_maybe")]
+    pub dimmed: Option<Dimmed>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ServerMessageDefault {
     pub enabled: bool,
     pub smart: Option<i64>,
     pub username_format: UsernameFormat,
@@ -389,7 +479,7 @@ pub struct ServerMessage {
     pub dimmed: Option<Dimmed>,
 }
 
-impl Default for ServerMessage {
+impl Default for ServerMessageDefault {
     fn default() -> Self {
         Self {
             enabled: true,
@@ -402,54 +492,50 @@ impl Default for ServerMessage {
     }
 }
 
-impl ServerMessage {
-    pub fn should_send_message(
-        &self,
-        nick: Option<NickRef>,
-        channel: &target::Channel,
-        server: &Server,
-        casemapping: isupport::CaseMap,
-    ) -> bool {
-        // Server Message is not enabled.
-        if !self.enabled {
-            return false;
-        }
-
-        is_target_channel_included(
-            self.include.as_ref(),
-            self.exclude.as_ref(),
-            nick,
-            channel,
-            server,
-            casemapping,
-        )
-    }
-}
-
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct InternalMessages {
     pub success: InternalMessage,
     pub error: InternalMessage,
+    pub default: InternalMessageDefault,
 }
 
 impl InternalMessages {
-    pub fn get(&self, server: &source::Status) -> Option<&InternalMessage> {
-        match server {
-            source::Status::Success => Some(&self.success),
-            source::Status::Error => Some(&self.error),
+    pub fn get(&self, status: &source::Status) -> &InternalMessage {
+        match status {
+            source::Status::Success => &self.success,
+            source::Status::Error => &self.error,
         }
     }
+
+    pub fn enabled(&self, status: &source::Status) -> bool {
+        if let Some(enabled) = self.get(status).enabled {
+            enabled
+        } else {
+            self.default.enabled
+        }
+    }
+
+    pub fn smart(&self, status: &source::Status) -> Option<i64> {
+        self.get(status).smart.or(self.default.smart)
+    }
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default)]
+pub struct InternalMessage {
+    pub enabled: Option<bool>,
+    pub smart: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub struct InternalMessage {
+pub struct InternalMessageDefault {
     pub enabled: bool,
     pub smart: Option<i64>,
 }
 
-impl Default for InternalMessage {
+impl Default for InternalMessageDefault {
     fn default() -> Self {
         Self {
             enabled: true,
@@ -494,6 +580,51 @@ pub enum UsernameFormat {
     Mask,
 }
 
+#[derive(Debug, Copy, Clone, Default)]
+pub enum AccessLevelFormat {
+    All,
+    #[default]
+    Highest,
+    None,
+}
+
+impl<'de> Deserialize<'de> for AccessLevelFormat {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "kebab-case")]
+        pub enum Format {
+            All,
+            Highest,
+            None,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Inner {
+            Boolean(bool),
+            Enum(Format),
+        }
+
+        match Inner::deserialize(deserializer)? {
+            Inner::Boolean(b) => {
+                if b {
+                    Ok(AccessLevelFormat::Highest)
+                } else {
+                    Ok(AccessLevelFormat::None)
+                }
+            }
+            Inner::Enum(format) => match format {
+                Format::All => Ok(AccessLevelFormat::All),
+                Format::Highest => Ok(AccessLevelFormat::Highest),
+                Format::None => Ok(AccessLevelFormat::None),
+            },
+        }
+    }
+}
+
 impl Buffer {
     pub fn format_timestamp(
         &self,
@@ -503,13 +634,12 @@ impl Buffer {
             return None;
         }
 
-        Some(
-            self.timestamp.brackets.format(
-                date_time
-                    .with_timezone(&Local)
-                    .format(&self.timestamp.format),
+        Some(self.timestamp.brackets.format(
+            date_time.with_timezone(&Local).format_localized(
+                &self.timestamp.format,
+                self.timestamp.locale,
             ),
-        )
+        ))
     }
 
     pub fn format_range_timestamp(
@@ -528,9 +658,10 @@ impl Buffer {
                 .brackets
                 .format(format!(
                     "{}",
-                    start_date_time
-                        .with_timezone(&Local)
-                        .format(&self.timestamp.format)
+                    start_date_time.with_timezone(&Local).format_localized(
+                        &self.timestamp.format,
+                        self.timestamp.locale
+                    )
                 ))
                 .to_string(),
             " \u{2013} ".to_string(),
@@ -538,9 +669,10 @@ impl Buffer {
                 .brackets
                 .format(format!(
                     "{}",
-                    end_date_time
-                        .with_timezone(&Local)
-                        .format(&self.timestamp.format)
+                    end_date_time.with_timezone(&Local).format_localized(
+                        &self.timestamp.format,
+                        self.timestamp.locale
+                    )
                 ))
                 .to_string(),
         ))

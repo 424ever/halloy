@@ -9,8 +9,6 @@ edition.workspace = true
 
 [features]
 default = []
-debug = ["iced/debug"]
-dev = ["debug", "data/dev"]
 tor = ["data/tor"]
 
 [workspace]
@@ -24,9 +22,9 @@ edition = "2024"
 
 [workspace.dependencies]
 tokio = { version = "1.44.0" }
-futures = "0.3.30"
+futures = "0.3.32"
 thiserror = "2.0.12"
-chrono = { version = "0.4.40", features = ['serde'] }
+chrono = { version = "0.4.40", features = ['serde', 'unstable-locales'] }
 bytes = "1.10.1"
 strum = { version = "0.27.1", features = ["derive"] }
 anyhow = "1.0.97"
@@ -103,6 +101,23 @@ mundy = { version = "0.1.9", default-features = false, features = [
     "log",
 ] }
 
+[dev-dependencies]
+iced = { version = "0.15.0-dev", default-features = false, features = [
+    "wgpu",
+    "tiny-skia",
+    "fira-sans",
+    "tokio",
+    "lazy",
+    "advanced",
+    "image",
+    "svg",
+    "wayland",
+    "x11",
+    "crisp",
+    "web-colors",
+    "debug",
+] }
+
 [target.'cfg(windows)'.dependencies]
 image = "0.24.6"
 iced = { version = "0.15.0-dev", default-features = false, features = [
@@ -110,14 +125,32 @@ iced = { version = "0.15.0-dev", default-features = false, features = [
     "sysinfo",
 ] }
 
+[target.'cfg(windows)'.dev-dependencies]
+iced = { version = "0.15.0-dev", default-features = false, features = [
+    "web-colors",
+    "sysinfo",
+    "debug",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSWorkspace",
+] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSString",
+    "NSURL",
+] }
+
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3.0.2"
 windows_exe_info = "0.4"
 
 [patch.crates-io]
-iced = { git = "https://github.com/squidowl/iced", rev = "19f12c509614465cb93f078d33581f48ead78fdd" }
-iced_core = { git = "https://github.com/squidowl/iced", rev = "19f12c509614465cb93f078d33581f48ead78fdd" }
-iced_wgpu = { git = "https://github.com/squidowl/iced", rev = "19f12c509614465cb93f078d33581f48ead78fdd" }
+iced = { git = "https://github.com/squidowl/iced", rev = "af28bbe8de1dfafa2ebe7a3ac96ebcc87ae05538" }
+iced_core = { git = "https://github.com/squidowl/iced", rev = "af28bbe8de1dfafa2ebe7a3ac96ebcc87ae05538" }
+iced_wgpu = { git = "https://github.com/squidowl/iced", rev = "af28bbe8de1dfafa2ebe7a3ac96ebcc87ae05538" }
 
 [profile.ci]
 inherits = "dev"
@@ -131,7 +164,8 @@ opt-level = 1
 [profile.dev.package."*"]
 opt-level = 3
 
-[lints.clippy]
+[workspace.lints.clippy]
+cast_lossless = "deny"
 cloned_instead_of_copied = "deny"
 default_trait_access = "deny"
 ignored_unit_patterns = "deny"
@@ -144,18 +178,8 @@ semicolon_if_nothing_returned = "deny"
 uninlined_format_args = "deny"
 unnecessary_wraps = "deny"
 
-[workspace.lints.clippy]
-cloned_instead_of_copied = "deny"
-default_trait_access = "deny"
-ignored_unit_patterns = "deny"
-items_after_statements = "deny"
-manual_is_variant_and = "deny"
-manual_string_new = "deny"
-map_unwrap_or = "deny"
-redundant_closure_for_method_calls = "deny"
-semicolon_if_nothing_returned = "deny"
-uninlined_format_args = "deny"
-unnecessary_wraps = "deny"
+[lints]
+workspace = true
 
 [workspace.metadata.typos.default]
 extend-ignore-re = [

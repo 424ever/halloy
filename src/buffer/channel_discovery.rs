@@ -118,10 +118,11 @@ pub fn view<'a>(
         column![
             row![
                 pick_list(
-                    clients.servers().collect::<Vec<_>>(),
                     selected_server,
-                    |server: &Server| Message::SelectServer(server.clone())
+                    clients.servers().cloned().collect::<Vec<_>>(),
+                    Server::to_string
                 )
+                .on_select(Message::SelectServer)
                 .placeholder("Select server"),
                 text_input("Search..", &state.search_query)
                     .id(state.search_query_id.clone())
@@ -268,14 +269,17 @@ fn channel_list_view<'a>(
                             Option::<fn(Color) -> Color>::None,
                             move |link| match link {
                                 message::Link::Url(_) => {
-                                    context_menu::Entry::url_list()
+                                    context_menu::Entry::url_list(None)
                                 }
                                 _ => vec![],
                             },
                             move |link, entry, length| {
                                 entry
                                     .view(
-                                        link.url().map(Context::Url),
+                                        link.url().map(|url| Context::Url {
+                                            url,
+                                            message: None,
+                                        }),
                                         length,
                                         config,
                                         theme,

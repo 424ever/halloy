@@ -3,14 +3,14 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::{fmt, io};
+use std::{fmt, io, iter};
 
 use anyhow::{Context as ErrorContext, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use futures::channel::mpsc;
 use futures::{Future, FutureExt};
 use indexmap::IndexMap;
-use irc::proto::{self, Command, command, tags};
+use irc::proto::{self, Command, command};
 use itertools::{Either, Itertools};
 use tokio::fs;
 
@@ -29,8 +29,7 @@ use crate::time::Posix;
 use crate::user::{ChannelUsers, Nick, NickRef};
 use crate::{
     Server, User, buffer, channel_discovery, compression, config, ctcp, dcc,
-    environment, file_transfer, history, isupport, message, mode, preview,
-    server,
+    environment, file_transfer, history, isupport, message, mode, server,
 };
 
 pub mod on_connect;
@@ -129,6 +128,8 @@ pub enum Event {
     MonitoredOffline(Vec<Nick>),
     OnConnect(on_connect::Stream),
     BouncerNetwork(Server, config::Server),
+    AddToSidebar(target::Query),
+    Disconnect(Option<String>),
 }
 
 struct ChatHistoryRequest {
@@ -189,7 +190,7 @@ impl Client {
         sender: mpsc::Sender<proto::Message>,
     ) -> Self {
         let preview_proxy_client = if let Some(proxy) = config.proxy.as_ref() {
-            match preview::client_from_proxy(proxy) {
+            match config::proxy::build_client(proxy) {
                 Ok(preview_proxy_client) => Some(preview_proxy_client),
                 Err(error) => {
                     log::warn!("[{server}] Preview fetching disabled: {error}");
@@ -285,6 +286,111 @@ impl Client {
         self.handle.try_send(command!("USER", user, real))?;
         self.registration_step = RegistrationStep::List;
         Ok(())
+    }
+
+    pub fn update_config(
+        &mut self,
+        config: Arc<config::Server>,
+        from_modal: bool,
+    ) -> Vec<Event> {
+        if self.registration_step == RegistrationStep::Complete {
+            self.join(
+                &config
+                    .channels
+                    .iter()
+                    .filter_map(|channel| {
+                        target::Channel::parse(
+                            channel,
+                            self.chantypes(),
+                            self.statusmsg(),
+                            self.casemapping(),
+                        )
+                        .ok()
+                    })
+                    .filter(|channel| !self.chanmap.contains_key(channel))
+                    .collect::<Vec<_>>(),
+            );
+
+            if !config.monitor.is_empty()
+                && config.monitor != self.config.monitor
+            {
+                if let Some(isupport::Parameter::MONITOR(monitor_limit)) =
+                    self.isupport.get(&isupport::Kind::MONITOR)
+                {
+                    if let Err(e) =
+                        self.handle.try_send(command!("MONITOR", "C"))
+                    {
+                        log::warn!(
+                            "[{}] Error clearing monitor: {e}",
+                            self.server
+                        );
+                    }
+
+                    let messages = group_monitors(
+                        &config.monitor,
+                        *monitor_limit,
+                        find_target_limit(&self.isupport, "MONITOR"),
+                        &self.server,
+                    );
+
+                    for message in messages {
+                        if let Err(e) = self.handle.try_send(message) {
+                            log::warn!(
+                                "[{}] Error sending monitor: {e}",
+                                self.server
+                            );
+                        }
+                    }
+                } else {
+                    log::warn!(
+                        "[{}] Monitor list configured for, but is not supported by the server",
+                        self.server,
+                    );
+                }
+            }
+        }
+
+        let events = config
+            .queries
+            .iter()
+            .filter_map(|query| {
+                target::Query::parse(
+                    query,
+                    self.chantypes(),
+                    self.statusmsg(),
+                    self.casemapping(),
+                )
+                .ok()
+                .map(Event::AddToSidebar)
+            })
+            .collect::<Vec<_>>();
+
+        if from_modal {
+            return events;
+        }
+
+        if self.config.who_poll_enabled != config.who_poll_enabled {
+            if config.who_poll_enabled {
+                for channel in self.chanmap.keys() {
+                    self.who_polls.push_back(WhoPoll {
+                        channel: channel.clone(),
+                        status: WhoStatus::Joined,
+                    });
+                }
+            } else {
+                self.who_polls.retain(|who_poll| {
+                    matches!(
+                        who_poll.status,
+                        WhoStatus::Requested(_, _, _)
+                            | WhoStatus::Receiving(_, _)
+                    )
+                });
+            }
+        }
+
+        self.config = config;
+
+        events
     }
 
     fn quit(&mut self, reason: Option<String>) {
@@ -401,7 +507,7 @@ impl Client {
                 self.labels.insert(label.clone(), context);
 
                 // IRC: Encode tags
-                message.tags = tags!["label" => label];
+                message.tags.insert("label".to_string(), label);
             }
 
             self.reroute_responses_to =
@@ -1691,18 +1797,18 @@ impl Client {
                 ));
 
                 if user.nickname() == self.nickname() {
-                    // TODO(pounce, #1070) change to `insert_sorted_by` when merged
-                    let (Ok(i) | Err(i)) =
-                        self.chanmap.binary_search_by(|c, _| {
-                            self.compare_channels(
-                                c.as_normalized_str(),
-                                target_channel.as_normalized_str(),
-                            )
-                        });
-                    self.chanmap.insert_before(
-                        i,
+                    let chantypes = self.chantypes().to_vec();
+                    let _ = self.chanmap.insert_sorted_by(
                         target_channel.clone(),
                         Channel::default(),
+                        |c1, _, c2, _| {
+                            compare_channels(
+                                &chantypes,
+                                config.sidebar.order_channels_by,
+                                c1.as_normalized_str(),
+                                c2.as_normalized_str(),
+                            )
+                        },
                     );
 
                     // Add channel to WHO poll queue
@@ -1810,7 +1916,7 @@ impl Client {
                         {
                             who_poll.status =
                                 WhoStatus::Receiving(source.clone(), None);
-                            log::debug!(
+                            log::trace!(
                                 "[{}] {channel} - WHO receiving...",
                                 self.server
                             );
@@ -1868,7 +1974,7 @@ impl Client {
                                         source.clone(),
                                         Some(*request_token),
                                     );
-                                    log::debug!(
+                                    log::trace!(
                                         "[{}] {channel} - WHO receiving...",
                                         self.server
                                     );
@@ -1884,7 +1990,7 @@ impl Client {
                                     Some(*request_token),
                                 );
 
-                                log::debug!(
+                                log::trace!(
                                     "[{}] {channel} - WHO receiving...",
                                     self.server
                                 );
@@ -1993,7 +2099,7 @@ impl Client {
                         }
                     }
 
-                    log::debug!("[{}] {mask} - WHO done", self.server);
+                    log::trace!("[{}] {mask} - WHO done", self.server);
 
                     if let Some(client_channel) =
                         self.chanmap.get_mut(&target_channel)
@@ -2099,8 +2205,11 @@ impl Client {
                         self.chanmodes(),
                         self.prefix(),
                     );
+                    let target_channel = channel.clone();
 
                     if let Some(channel) = self.chanmap.get_mut(&channel) {
+                        let mut channel_mode_changed = false;
+
                         for mode in modes {
                             if let Some((op, lookup)) =
                                 mode.operation().zip(mode.arg().map(|nick| {
@@ -2114,7 +2223,19 @@ impl Client {
                             {
                                 user.update_access_level(op, *mode.value());
                                 channel.users.insert(user);
+                            } else {
+                                channel_mode_changed = true;
                             }
+                        }
+
+                        // Request MODE to update the channel.
+                        if channel_mode_changed {
+                            self.send(
+                                None,
+                                command!("MODE", target_channel.to_string())
+                                    .into(),
+                                TokenPriority::Low,
+                            );
                         }
                     }
                 } else {
@@ -2238,7 +2359,7 @@ impl Client {
                     ));
                 }
                 // Exclude topic message from history to prevent spam during dev
-                #[cfg(feature = "dev")]
+                #[cfg(debug_assertions)]
                 return Ok(vec![]);
             }
             Command::Numeric(RPL_TOPICWHOTIME, args) => {
@@ -2261,14 +2382,11 @@ impl Client {
                         Posix::from_seconds(ok!(args.get(3)).parse::<u64>()?);
                     channel.topic.time =
                         Some(timestamp.datetime().ok_or_else(|| {
-                            anyhow!(
-                                "Unable to parse timestamp: {:?}",
-                                timestamp
-                            )
+                            anyhow!("Unable to parse timestamp: {timestamp:?}")
                         })?);
                 }
                 // Exclude topic message from history to prevent spam during dev
-                #[cfg(feature = "dev")]
+                #[cfg(debug_assertions)]
                 return Ok(vec![]);
             }
             Command::Numeric(RPL_NOTOPIC, args) => {
@@ -2631,7 +2749,23 @@ impl Client {
                 self.handle.try_send(command!("CAP", "END"))?;
             }
             Command::Numeric(ERR_SASLFAIL | ERR_SASLTOOLONG, _) => {
-                log::debug!("[{}] sasl auth failed", self.server);
+                log::warn!("[{}] SASL authentication failed", self.server);
+
+                if self
+                    .config
+                    .sasl
+                    .as_ref()
+                    .is_some_and(config::server::Sasl::disconnect_on_failure)
+                {
+                    log::warn!(
+                        "[{}] disconnected in order to protect identity from SASL authentication failure",
+                        self.server
+                    );
+
+                    return Ok(vec![Event::Disconnect(Some(
+                        "SASL authentication failure".to_string(),
+                    ))]);
+                }
 
                 self.registration_step = RegistrationStep::End;
                 self.handle.try_send(command!("CAP", "END"))?;
@@ -2814,13 +2948,30 @@ impl Client {
                     }
                 }
 
-                return Ok(vec![Event::OnConnect(on_connect(
-                    self.handle.clone(),
-                    self.config.clone(),
-                    self.nickname(),
-                    &self.isupport,
-                    config,
-                ))]);
+                let events = self
+                    .config
+                    .queries
+                    .iter()
+                    .filter_map(|query| {
+                        target::Query::parse(
+                            query,
+                            self.chantypes(),
+                            self.statusmsg(),
+                            self.casemapping(),
+                        )
+                        .ok()
+                        .map(Event::AddToSidebar)
+                    })
+                    .chain(iter::once(Event::OnConnect(on_connect(
+                        self.handle.clone(),
+                        self.config.clone(),
+                        self.nickname(),
+                        &self.isupport,
+                        config,
+                    ))))
+                    .collect::<Vec<_>>();
+
+                return Ok(events);
             }
             _ => {}
         }
@@ -2862,32 +3013,6 @@ impl Client {
         } else {
             false
         }
-    }
-
-    // TODO allow configuring the "sorting method"
-    // this function sorts channels together which have similar names when the chantype prefix
-    // (sometimes multiplied) is removed
-    // e.g. '#chat', '##chat-offtopic' and '&chat-local' all get sorted together instead of in
-    // wildly different places.
-    fn compare_channels(&self, a: &str, b: &str) -> Ordering {
-        let (Some(a_chantype), Some(b_chantype)) =
-            (a.chars().nth(0), b.chars().nth(0))
-        else {
-            return a.cmp(b);
-        };
-
-        if [a_chantype, b_chantype]
-            .iter()
-            .all(|c| self.chantypes().contains(c))
-        {
-            let ord = a
-                .trim_start_matches(a_chantype)
-                .cmp(b.trim_start_matches(b_chantype));
-            if ord != Ordering::Equal {
-                return ord;
-            }
-        }
-        a.cmp(b)
     }
 
     pub fn chathistory_limit(&self) -> u16 {
@@ -3282,7 +3407,7 @@ impl Client {
             };
 
             if let Some(request) = request {
-                log::debug!(
+                log::trace!(
                     "[{}] {} - WHO {}",
                     self.server,
                     who_poll.channel,
@@ -3400,6 +3525,42 @@ impl Client {
     }
 }
 
+// If config.sidebar.order_channels_by is `name-and-prefix` this will sort channels together which
+// have similar names when the chantype prefix (sometimes multiplied) is removed.
+// e.g., '#chat', '##chat-offtopic' and '&chat-local' all get sorted together instead of in
+// wildly different places.
+fn compare_channels(
+    chantypes: &[char],
+    order_channels_by: config::sidebar::OrderChannelsBy,
+    a: &str,
+    b: &str,
+) -> Ordering {
+    match order_channels_by {
+        config::sidebar::OrderChannelsBy::NameAndPrefix => return a.cmp(b),
+        config::sidebar::OrderChannelsBy::Name => {}
+    }
+
+    let (Some(a_chantype), Some(b_chantype)) =
+        (a.chars().next(), b.chars().next())
+    else {
+        return a.cmp(b);
+    };
+
+    if [a_chantype, b_chantype]
+        .iter()
+        .all(|c| chantypes.contains(c))
+    {
+        let ord = a
+            .trim_start_matches(a_chantype)
+            .cmp(b.trim_start_matches(b_chantype));
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+
+    a.cmp(b)
+}
+
 fn continue_chathistory_between(
     target: &Target,
     events: &[Event],
@@ -3408,7 +3569,10 @@ fn continue_chathistory_between(
 ) -> Option<ChatHistorySubcommand> {
     let start_message_reference =
         events.first().and_then(|first_event| match first_event {
-            Event::Single(message, _) | Event::WithTarget(message, _, _) => {
+            Event::Single(message, _)
+            | Event::PrivOrNotice(message, _, _)
+            | Event::WithTarget(message, _, _)
+            | Event::DirectMessage(message, _, _) => {
                 match end_message_reference {
                     MessageReference::MessageId(_) => {
                         message_id(message).map(MessageReference::MessageId)
@@ -3419,7 +3583,20 @@ fn continue_chathistory_between(
                     MessageReference::None => None,
                 }
             }
-            _ => None,
+            Event::Broadcast(_)
+            | Event::FileTransferRequest(_)
+            | Event::UpdateReadMarker(_, _)
+            | Event::JoinedChannel(_, _)
+            | Event::LoggedIn(_)
+            | Event::AddedIsupportParam(_)
+            | Event::ChatHistoryTargetReceived(_, _)
+            | Event::ChatHistoryTargetsReceived(_)
+            | Event::MonitoredOnline(_)
+            | Event::MonitoredOffline(_)
+            | Event::OnConnect(_)
+            | Event::BouncerNetwork(_, _)
+            | Event::AddToSidebar(_)
+            | Event::Disconnect(_) => None,
         });
 
     start_message_reference.map(|start_message_reference| {
@@ -3502,6 +3679,19 @@ impl Map {
         self.0.insert(server, State::Ready(client));
     }
 
+    pub fn update_config(
+        &mut self,
+        server: &Server,
+        config: Arc<config::Server>,
+        from_modal: bool,
+    ) -> Vec<Event> {
+        if let Some(State::Ready(client)) = self.0.get_mut(server) {
+            client.update_config(config, from_modal)
+        } else {
+            vec![]
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -3579,20 +3769,6 @@ impl Map {
         if let Some(client) = self.client_mut(server) {
             client.quit(reason);
         }
-    }
-
-    pub fn exit(&mut self) -> HashSet<Server> {
-        self.0
-            .iter_mut()
-            .filter_map(|(server, state)| {
-                if let State::Ready(client) = state {
-                    client.quit(None);
-                    Some(server.clone())
-                } else {
-                    None
-                }
-            })
-            .collect()
     }
 
     pub fn resolve_user_attributes<'a>(

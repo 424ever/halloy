@@ -22,6 +22,7 @@ You can define multiple server sections in the configuration file. Each server s
     - [password\_command](#password_command)
     - [channels](#channels)
     - [channel\_keys](#channel_keys)
+    - [queries](#queries)
     - [ping\_time](#ping_time)
     - [ping\_timeout](#ping_timeout)
     - [reconnect\_delay](#reconnect_delay)
@@ -38,6 +39,7 @@ You can define multiple server sections in the configuration file. Each server s
     - [monitor](#monitor)
     - [chathistory](#chathistory)
     - [proxy](#proxy)
+    - [autoconnect](#autoconnect)
   - [Filters](#filters)
   - [SASL Plain](#sasl-plain)
   - [SASL External](#sasl-external)
@@ -274,6 +276,19 @@ A mapping of channel names to keys (passwords) for join-on-connect.
 channel_keys = { "#foo" = "password" }
 ```
 
+### queries
+
+A list of queries to add to the sidebar on connection.
+
+```toml
+# Type: array of strings
+# Values: array of any strings
+# Default: not set
+
+[servers.<name>]
+queries = ["alice", "bob"]
+```
+
 ### ping_time
 
 The amount of inactivity in seconds before the client will ping the server.
@@ -499,6 +514,19 @@ host = "192.168.1.100"
 port = 1080
 username = "username"
 password = "password"
+```
+
+### autoconnect
+
+Whether or not to connect to the server when launching Halloy or when changing the connection details in the server configuration.
+
+```toml
+# Type: boolean
+# Values: true, false
+# Default: true
+
+[servers.<name>]
+autoconnect = true
 ```
 
 ## [Filters](filters.md)

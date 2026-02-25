@@ -62,6 +62,7 @@ pub enum Event {
     OpenBuffers(data::Server, Vec<(Target, BufferAction)>),
     OpenInternalBuffer(buffer::Internal),
     OpenServer(String),
+    Reconnect(data::Server),
     LeaveBuffers(Vec<Target>, Option<String>),
     SelectedServer(data::Server),
     GoToMessage(data::Server, target::Channel, message::Hash),
@@ -235,6 +236,9 @@ impl Buffer {
                     channel::Event::OpenServer(server) => {
                         Event::OpenServer(server)
                     }
+                    channel::Event::Reconnect(server) => {
+                        Event::Reconnect(server)
+                    }
                     channel::Event::LeaveBuffers(targets, reason) => {
                         Event::LeaveBuffers(targets, reason)
                     }
@@ -289,6 +293,9 @@ impl Buffer {
                     server::Event::OpenServer(server) => {
                         Event::OpenServer(server)
                     }
+                    server::Event::Reconnect(server) => {
+                        Event::Reconnect(server)
+                    }
                     server::Event::OpenBuffers(server, targets) => {
                         Event::OpenBuffers(server, targets)
                     }
@@ -342,6 +349,7 @@ impl Buffer {
                     query::Event::OpenServer(server) => {
                         Event::OpenServer(server)
                     }
+                    query::Event::Reconnect(server) => Event::Reconnect(server),
                     query::Event::LeaveBuffers(targets, reason) => {
                         Event::LeaveBuffers(targets, reason)
                     }
@@ -900,50 +908,67 @@ impl Buffer {
         }
     }
 
-    pub fn set_scroll_limit_for_pending_scroll_to(
+    pub fn prepare_for_pending_scroll_to(
         &mut self,
         history: &history::Manager,
         config: &Config,
-    ) {
+    ) -> Task<Message> {
         match self {
             Buffer::Empty
             | Buffer::FileTransfers(_)
-            | Buffer::ChannelDiscovery(_) => (),
-            Buffer::Channel(state) => {
-                state.scroll_view.set_scroll_limit_for_pending_scroll_to(
+            | Buffer::ChannelDiscovery(_) => Task::none(),
+            Buffer::Channel(state) => state
+                .scroll_view
+                .prepare_for_pending_scroll_to(
                     scroll_view::Kind::Channel(&state.server, &state.target),
                     history,
                     config,
-                );
-            }
-            Buffer::Server(state) => {
-                state.scroll_view.set_scroll_limit_for_pending_scroll_to(
+                )
+                .map(|message| {
+                    Message::Channel(channel::Message::ScrollView(message))
+                }),
+            Buffer::Server(state) => state
+                .scroll_view
+                .prepare_for_pending_scroll_to(
                     scroll_view::Kind::Server(&state.server),
                     history,
                     config,
-                );
-            }
-            Buffer::Query(state) => {
-                state.scroll_view.set_scroll_limit_for_pending_scroll_to(
+                )
+                .map(|message| {
+                    Message::Server(server::Message::ScrollView(message))
+                }),
+            Buffer::Query(state) => state
+                .scroll_view
+                .prepare_for_pending_scroll_to(
                     scroll_view::Kind::Query(&state.server, &state.target),
                     history,
                     config,
-                );
-            }
-            Buffer::Logs(state) => {
-                state.scroll_view.set_scroll_limit_for_pending_scroll_to(
+                )
+                .map(|message| {
+                    Message::Query(query::Message::ScrollView(message))
+                }),
+            Buffer::Logs(state) => state
+                .scroll_view
+                .prepare_for_pending_scroll_to(
                     scroll_view::Kind::Logs,
                     history,
                     config,
-                );
-            }
-            Buffer::Highlights(state) => {
-                state.scroll_view.set_scroll_limit_for_pending_scroll_to(
+                )
+                .map(|message| {
+                    Message::Logs(logs::Message::ScrollView(message))
+                }),
+            Buffer::Highlights(state) => state
+                .scroll_view
+                .prepare_for_pending_scroll_to(
                     scroll_view::Kind::Highlights,
                     history,
                     config,
-                );
-            }
+                )
+                .map(|message| {
+                    Message::Highlights(highlights::Message::ScrollView(
+                        message,
+                    ))
+                }),
         }
     }
 

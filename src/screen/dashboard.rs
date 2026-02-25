@@ -17,11 +17,11 @@ use data::rate_limit::TokenPriority;
 use data::target::{self, Target};
 use data::{
     Config, Notification, Server, User, Version, client, command, config,
-    environment, file_transfer, history, preview, server,
+    environment, file_transfer, history, preview, server, stream,
 };
 use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{Space, column, container, row};
-use iced::{Length, Size, Task, Vector, advanced, clipboard};
+use iced::{Length, Padding, Size, Task, Vector, advanced, clipboard};
 use irc::proto;
 
 use self::command_bar::CommandBar;
@@ -34,7 +34,9 @@ use crate::widget::{
     shortcut,
 };
 use crate::window::Window;
-use crate::{Theme, event, notification, theme, window};
+use crate::{
+    Theme, event, notification, open_url, platform_specific, theme, window,
+};
 
 mod command_bar;
 pub mod pane;
@@ -90,6 +92,7 @@ pub enum Event {
     OpenServer(String),
     ImagePreview(PathBuf, url::Url),
     ToggleFullscreen,
+    Remove(Server),
 }
 
 impl Dashboard {
@@ -263,6 +266,8 @@ impl Dashboard {
         &mut self,
         message: Message,
         clients: &mut client::Map,
+        controllers: &mut stream::Map,
+        servers: &server::Map,
         theme: &mut Theme,
         version: &Version,
         config: &Config,
@@ -328,7 +333,12 @@ impl Dashboard {
 
                             let (buffer_task, buffer_event) = self
                                 .handle_buffer_event(
-                                    window, id, event, clients, config,
+                                    window,
+                                    id,
+                                    event,
+                                    clients,
+                                    controllers,
+                                    config,
                                 );
 
                             return (
@@ -513,7 +523,7 @@ impl Dashboard {
                         (Task::none(), Some(Event::ConfigReloaded(conf)))
                     }
                     sidebar::Event::OpenReleaseWebsite => {
-                        let _ = open::that_detached(RELEASE_WEBSITE);
+                        let _ = open_url::open(RELEASE_WEBSITE);
                         (Task::none(), None)
                     }
                     sidebar::Event::ToggleThemeEditor => (
@@ -521,7 +531,7 @@ impl Dashboard {
                         None,
                     ),
                     sidebar::Event::OpenDocumentation => {
-                        let _ = open::that_detached(WIKI_WEBSITE);
+                        let _ = open_url::open(WIKI_WEBSITE);
                         (Task::none(), None)
                     }
                     sidebar::Event::MarkServerAsRead(server) => {
@@ -544,8 +554,29 @@ impl Dashboard {
                         (Task::none(), None)
                     }
                     sidebar::Event::OpenConfigFile => {
-                        let _ = open::that_detached(Config::path());
+                        let _ = open_url::open(Config::path());
                         (Task::none(), None)
+                    }
+                    sidebar::Event::Connect(server) => {
+                        if let Some(parent) = server.parent() {
+                            controllers.connect(&parent);
+                        }
+
+                        controllers.connect(&server);
+
+                        for bouncer_network in servers.keys() {
+                            if bouncer_network
+                                .parent()
+                                .is_some_and(|parent| parent == server)
+                            {
+                                controllers.connect(bouncer_network);
+                            }
+                        }
+
+                        (Task::none(), None)
+                    }
+                    sidebar::Event::Remove(server) => {
+                        (Task::none(), Some(Event::Remove(server)))
                     }
                 };
 
@@ -608,14 +639,23 @@ impl Dashboard {
                                 self.panes.get_mut_by_buffer(&buffer)
                             {
                                 if state.buffer.has_pending_scroll_to() {
-                                    state
-                                        .buffer
-                                        .set_scroll_limit_for_pending_scroll_to(
-                                            &self.history,
-                                            config,
-                                        );
-
-                                    return (Task::none(), None);
+                                    return (
+                                        state
+                                            .buffer
+                                            .prepare_for_pending_scroll_to(
+                                                &self.history,
+                                                config,
+                                            )
+                                            .map(move |message| {
+                                                Message::Pane(
+                                                    window,
+                                                    pane::Message::Buffer(
+                                                        pane, message,
+                                                    ),
+                                                )
+                                            }),
+                                        None,
+                                    );
                                 } else {
                                     return (
                                         match config
@@ -773,7 +813,7 @@ impl Dashboard {
                         let (command, event) = match command {
                             command_bar::Command::Version(command) => match command {
                                 command_bar::Version::Application(_) => {
-                                    let _ = open::that_detached(RELEASE_WEBSITE);
+                                    let _ = open_url::open(RELEASE_WEBSITE);
                                     (Task::none(), None)
                                 }
                             },
@@ -782,8 +822,19 @@ impl Dashboard {
                                     self.maximize_pane();
                                     (Task::none(), None)
                                 }
-                                command_bar::Buffer::New => {
-                                    (self.new_pane(pane_grid::Axis::Horizontal), None)
+                                command_bar::Buffer::NewHorizontal => {
+                                    (
+                                        self.new_pane(
+                                            pane_grid::Axis::Horizontal,
+                                        ),
+                                        None,
+                                    )
+                                }
+                                command_bar::Buffer::NewVertical => {
+                                    (
+                                        self.new_pane(pane_grid::Axis::Vertical),
+                                        None,
+                                    )
                                 }
                                 command_bar::Buffer::Close => {
                                     let Focus { window, pane } = self.focus;
@@ -806,26 +857,26 @@ impl Dashboard {
                             },
                             command_bar::Command::Configuration(command) => match command {
                                 command_bar::Configuration::OpenConfigDirectory => {
-                                    let _ = open::that_detached(Config::config_dir());
+                                    let _ = open_url::open(Config::config_dir());
                                     (Task::none(), None)
                                 }
                                 command_bar::Configuration::OpenCacheDirectory => {
-                                    let _ = open::that_detached(environment::cache_dir());
+                                    let _ = open_url::open(environment::cache_dir());
                                     (Task::none(), None)
                                 }
                                 command_bar::Configuration::OpenDataDirectory => {
-                                    let _ = open::that_detached(environment::data_dir());
+                                    let _ = open_url::open(environment::data_dir());
                                     (Task::none(), None)
                                 }
                                 command_bar::Configuration::OpenWebsite => {
-                                    let _ = open::that_detached(environment::WIKI_WEBSITE);
+                                    let _ = open_url::open(environment::WIKI_WEBSITE);
                                     (Task::none(), None)
                                 }
                                 command_bar::Configuration::Reload => {
                                     (Task::perform(Config::load(), Message::ConfigReloaded), None)
                                 }
                                 command_bar::Configuration::OpenConfigFile => {
-                                    let _ = open::that_detached(Config::path());
+                                    let _ = open_url::open(Config::path());
                                     (Task::none(), None)
                                 },
                             },
@@ -846,7 +897,7 @@ impl Dashboard {
                                     }
                                 }
                                 command_bar::Theme::OpenThemesWebsite => {
-                                    let _ = open::that_detached(environment::THEME_WEBSITE);
+                                    let _ = open_url::open(environment::THEME_WEBSITE);
                                     (Task::none(), None)
                                 }
                             },
@@ -916,6 +967,18 @@ impl Dashboard {
                     }
                     MoveRight => {
                         return (move_focus(pane_grid::Direction::Right), None);
+                    }
+                    NewHorizontalBuffer => {
+                        return (
+                            self.new_pane(pane_grid::Axis::Horizontal),
+                            None,
+                        );
+                    }
+                    NewVerticalBuffer => {
+                        return (
+                            self.new_pane(pane_grid::Axis::Vertical),
+                            None,
+                        );
                     }
                     CloseBuffer => {
                         let Focus { window, pane } = self.focus;
@@ -1446,7 +1509,7 @@ impl Dashboard {
                 }
             },
             Message::LoadPreview((url, Ok(preview))) => {
-                log::debug!("Preview loaded for {url}");
+                log::trace!("Preview loaded for {url}");
                 if let hash_map::Entry::Occupied(mut entry) =
                     self.previews.entry(url)
                 {
@@ -1454,7 +1517,11 @@ impl Dashboard {
                 }
             }
             Message::LoadPreview((url, Err(error))) => {
-                log::info!("Failed to load preview for {url}: {error}");
+                if matches!(error, preview::LoadError::Disabled) {
+                    log::trace!("Failed to load preview for {url}: {error}");
+                } else {
+                    log::debug!("Failed to load preview for {url}: {error}");
+                }
                 if self.previews.contains_key(&url) {
                     self.previews.insert(url, preview::State::Error(error));
                 }
@@ -1478,6 +1545,12 @@ impl Dashboard {
         theme: &'a Theme,
     ) -> Element<'a, Message> {
         if let Some(state) = self.panes.popout.get(&window) {
+            let pane_gap = config.pane.gap.outer;
+            let top_padding =
+                platform_specific::popped_out_window_padding(config)
+                    + u32::from(pane_gap);
+            let padding = Padding::new(pane_gap.into()).top(top_padding as f32);
+
             let content = container(
                 PaneGrid::new(state, |id, pane, _maximized| {
                     let is_focused = self.focus == Focus { window, pane: id };
@@ -1507,14 +1580,14 @@ impl Dashboard {
             )
             .width(Length::Fill)
             .height(Length::Fill)
-            .padding(config.pane.gap.outer);
+            .padding(padding);
 
             return Element::new(content)
                 .map(move |message| Message::Pane(window, message));
         } else if let Some(editor) = self.theme_editor.as_ref()
             && editor.window == window
         {
-            return editor.view(theme).map(Message::ThemeEditor);
+            return editor.view(config, theme).map(Message::ThemeEditor);
         }
 
         column![].into()
@@ -1660,6 +1733,7 @@ impl Dashboard {
         id: pane_grid::Pane,
         event: buffer::Event,
         clients: &mut data::client::Map,
+        controllers: &mut stream::Map,
         config: &Config,
     ) -> (Task<Message>, Option<Event>) {
         let Some(pane) = self.panes.get_mut(window, id) else {
@@ -1703,6 +1777,35 @@ impl Dashboard {
                             url,
                             config.buffer.url.prompt_before_open,
                         ))
+                    }
+                    buffer::context_menu::Event::HidePreview(hash, url) => {
+                        let kind = pane
+                            .buffer
+                            .data()
+                            .and_then(history::Kind::from_buffer);
+                        let parsed = url::Url::parse(&url).ok();
+
+                        if let (Some(kind), Some(url)) = (kind, parsed) {
+                            self.history.hide_preview(kind, hash, url);
+                        }
+
+                        None
+                    }
+                    buffer::context_menu::Event::ShowPreview(hash, url) => {
+                        let kind = pane
+                            .buffer
+                            .data()
+                            .and_then(history::Kind::from_buffer);
+                        let parsed = url::Url::parse(&url).ok();
+
+                        if let (Some(kind), Some(url)) = (kind, parsed) {
+                            self.history.show_preview(kind, hash, &url);
+                            tasks.push(
+                                self.reload_visible_previews(clients, config),
+                            );
+                        }
+
+                        None
                     }
                     buffer::context_menu::Event::ToggleAccessLevel(
                         server,
@@ -2243,6 +2346,9 @@ impl Dashboard {
             }
             buffer::Event::OpenServer(server) => {
                 return (Task::none(), Some(Event::OpenServer(server)));
+            }
+            buffer::Event::Reconnect(server) => {
+                controllers.connect(&server);
             }
         }
 
@@ -2971,6 +3077,12 @@ impl Dashboard {
         self.history.get_unique_queries(server)
     }
 
+    pub fn add_to_sidebar(&mut self, server: Server, query: target::Query) {
+        let kind = history::Kind::Query(server, query);
+
+        self.history.open(kind);
+    }
+
     pub fn refocus_pane(&mut self) -> Task<Message> {
         let Focus { window, pane } = self.focus;
 
@@ -3363,7 +3475,11 @@ impl Dashboard {
 
         let event = self.file_transfers.receive(request.clone(), config)?;
 
-        self.notifications.notify(
+        let request_attention_window = self
+            .find_window_with_file_transfers()
+            .unwrap_or(self.main_window());
+
+        let request_attention = self.notifications.notify(
             &config.notifications,
             &Notification::FileTransferRequest {
                 nick: request.from.nickname().to_owned(),
@@ -3376,16 +3492,23 @@ impl Dashboard {
                 },
             },
             server,
+            request_attention_window,
         );
 
         let query = target::Query::from(request.from);
 
-        Some(self.handle_file_transfer_event(
+        let task = self.handle_file_transfer_event(
             server,
             &query,
             event,
             &config.buffer,
-        ))
+        );
+
+        if let Some(request_attention) = request_attention {
+            Some(Task::batch(vec![task, request_attention]))
+        } else {
+            Some(task)
+        }
     }
 
     pub fn handle_file_transfer_event(
@@ -3705,13 +3828,37 @@ impl Dashboard {
         }
     }
 
-    pub fn is_open_in_pane(&mut self, kind: &history::Kind) -> bool {
-        self.panes.iter().any(|(_, _, state)| {
+    pub fn find_window_with_file_transfers(&mut self) -> Option<window::Id> {
+        self.panes.iter().find_map(|(window_id, _, state)| {
+            matches!(state.buffer, Buffer::FileTransfers(_))
+                .then_some(window_id)
+        })
+    }
+
+    pub fn find_window_with_history(
+        &mut self,
+        kind: &history::Kind,
+    ) -> Option<window::Id> {
+        self.panes.iter().find_map(|(window_id, _, state)| {
             state
                 .buffer
                 .data()
                 .and_then(history::Kind::from_buffer)
                 .is_some_and(|pane_kind| pane_kind == *kind)
+                .then_some(window_id)
+        })
+    }
+
+    pub fn find_window_with_server(
+        &mut self,
+        server: &Server,
+    ) -> Option<window::Id> {
+        self.panes.iter().find_map(|(window_id, _, state)| {
+            state
+                .buffer
+                .server()
+                .is_some_and(|pane_server| pane_server == *server)
+                .then_some(window_id)
         })
     }
 
@@ -4054,9 +4201,9 @@ fn cycle_next_unread_buffer(
         Some(buffer) == current || !opened.contains(buffer)
     });
 
-    let buffer = current?;
-
-    let index = all.iter().position(|(b, _)| b == buffer)?;
+    let index = current
+        .and_then(|buffer| all.iter().position(|(b, _)| b == buffer))
+        .unwrap_or(all.len());
 
     let next_after = || {
         all.iter()
@@ -4082,9 +4229,9 @@ fn cycle_previous_unread_buffer(
         Some(buffer) == current || !opened.contains(buffer)
     });
 
-    let buffer = current?;
-
-    let index = all.iter().rev().position(|(b, _)| b == buffer)?;
+    let index = current
+        .and_then(|buffer| all.iter().rev().position(|(b, _)| b == buffer))
+        .unwrap_or(all.len());
 
     let previous_before = || {
         all.iter()
@@ -4107,11 +4254,11 @@ fn cycle_previous_unread_buffer(
 
 fn preview_client_from_config(config: &Config) -> Option<reqwest::Client> {
     let preview_client = if let Some(proxy) = config.proxy.as_ref() {
-        preview::client_from_proxy(proxy)
+        config::proxy::build_client(proxy)
     } else {
         reqwest::Client::builder()
             .build()
-            .map_err(preview::BuildError::Reqwest)
+            .map_err(config::proxy::BuildError::Reqwest)
     };
 
     match preview_client {

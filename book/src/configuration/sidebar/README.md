@@ -7,8 +7,9 @@ Sidebar settings for Halloy.
     - [server\_icon](#server_icon)
     - [position](#position)
     - [max\_width](#max_width)
-    - [show\_menu\_button](#show_menu_button)
+    - [user\_menu](#user_menu)
     - [order\_by](#order_by)
+    - [order\_channels\_by](#order_channels_by)
   - [Scrollbar](#scrollbar)
   - [Unread Indicator](#unread-indicator)
   - [Padding](#padding)
@@ -62,7 +63,7 @@ Specify sidebar max width in pixels. Only used if `position` is `"left"` or `"ri
 max_width = 200
 ```
 
-### show_menu_button
+### user_menu
 
 Show or hide the user menu button in the sidebar.
 
@@ -71,13 +72,13 @@ Show or hide the user menu button in the sidebar.
 # Values: true, false
 # Default: true
 
-[sidebar]
-show_menu_button = true
+[sidebar.user_menu]
+enabled = true
 ```
 
 ### order_by
 
-Ordering that servers are listed in the sidebar uses to select from matching users.
+Ordering that servers are listed in the sidebar.
 
 - `"config"`: The same order they are specified in the configuration file.
 - `"alpha"`: Case-insensitive alphabetical ordering.
@@ -89,6 +90,22 @@ Ordering that servers are listed in the sidebar uses to select from matching use
 
 [sidebar]
 order_by = "config"
+```
+
+### order_channels_by
+
+Include chantypes (channel prefixes, e.g., `#` and `##`) when sorting channels in the sidebar.
+
+- `"name"`: Sort channels by name only, ignoring chantypes.
+- `"name-and-prefix"`: Sort channels by name including their chantypes.
+
+```toml
+# Type: string
+# Values: "name", "name-and-prefix"
+# Default: "name"
+
+[sidebar]
+order_channels_by = "name-and-prefix"
 ```
 
 ## [Scrollbar](scrollbar.md)

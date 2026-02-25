@@ -239,6 +239,13 @@ impl Manager {
         )
     }
 
+    pub fn open(&mut self, kind: history::Kind) {
+        self.data
+            .map
+            .entry(kind.clone())
+            .or_insert(History::partial(kind.clone()));
+    }
+
     pub fn exit(
         &mut self,
         clients: &client::Map,
@@ -601,6 +608,15 @@ impl Manager {
         self.data.hide_preview(&kind.into(), message, url);
     }
 
+    pub fn show_preview(
+        &mut self,
+        kind: impl Into<history::Kind>,
+        message: message::Hash,
+        url: &url::Url,
+    ) {
+        self.data.show_preview(&kind.into(), message, url);
+    }
+
     pub fn block_message(
         &self,
         message: &mut crate::Message,
@@ -611,14 +627,15 @@ impl Manager {
     ) {
         message.blocked = false;
 
-        if let message::Source::Server(Some(source)) = message.target.source()
-            && let Some(server_message) =
-                buffer_config.server_messages.get(source)
-        {
+        if let message::Source::Server(source) = message.target.source() {
             // Check if target is a channel, and if included/excluded.
             if let message::Target::Channel { channel, .. } = &message.target
-                && !server_message.should_send_message(
-                    source.nick().map(Nick::as_nickref),
+                && !buffer_config.server_messages.should_send_message(
+                    source.as_ref().map(message::source::server::Server::kind),
+                    source
+                        .as_ref()
+                        .and_then(|source| source.nick())
+                        .map(Nick::as_nickref),
                     channel,
                     server,
                     casemapping,
@@ -628,15 +645,18 @@ impl Manager {
                 return;
             }
 
-            if let Some(seconds) = server_message.smart {
-                let nick = match source.nick() {
-                    Some(nick) => Some(nick.clone()),
-                    None => message.plain().and_then(|s| {
-                        s.split(' ')
-                            .nth(1)
-                            .map(|nick| Nick::from_str(nick, casemapping))
-                    }),
-                };
+            if let Some(seconds) = buffer_config.server_messages.smart(
+                source.as_ref().map(message::source::server::Server::kind),
+            ) {
+                let nick =
+                    match source.as_ref().and_then(|source| source.nick()) {
+                        Some(nick) => Some(nick.clone()),
+                        None => message.plain().and_then(|s| {
+                            s.split(' ')
+                                .nth(1)
+                                .map(|nick| Nick::from_str(nick, casemapping))
+                        }),
+                    };
 
                 if let Some(nick) = nick
                     && let Some(history) = self.data.map.get(kind)
@@ -802,7 +822,7 @@ impl Manager {
                 message.blocked = false;
 
                 match message.target.source() {
-                    message::Source::Server(Some(source)) => {
+                    message::Source::Server(source) => {
                         let server = if let Some(server) = kind.server() {
                             Some(server)
                         } else if let message::Target::Highlights {
@@ -818,40 +838,52 @@ impl Manager {
                         let casemapping =
                             clients.get_casemapping_or_default(server);
 
-                        if let Some(server_message) =
-                            buffer_config.server_messages.get(source)
-                        {
-                            // Check if target is a channel, and if included/excluded.
-                            if let message::Target::Channel { channel, .. }
-                            | message::Target::Highlights {
-                                channel, ..
-                            } = &message.target
-                                && let Some(server) = server
-                                && !server_message.should_send_message(
-                                    source.nick().map(Nick::as_nickref),
+                        // Check if target is a channel, and if included/excluded.
+                        if let message::Target::Channel { channel, .. }
+                        | message::Target::Highlights { channel, .. } =
+                            &message.target
+                            && let Some(server) = server
+                            && !buffer_config
+                                .server_messages
+                                .should_send_message(
+                                    source.as_ref().map(
+                                        message::source::server::Server::kind,
+                                    ),
+                                    source
+                                        .as_ref()
+                                        .and_then(|source| source.nick())
+                                        .map(Nick::as_nickref),
                                     channel,
                                     server,
                                     casemapping,
                                 )
+                        {
+                            message.blocked = true;
+                        } else if let Some(seconds) =
+                            buffer_config.server_messages.smart(
+                                source
+                                    .as_ref()
+                                    .map(message::source::server::Server::kind),
+                            )
+                        {
+                            let nick = match source
+                                .as_ref()
+                                .and_then(|source| source.nick())
                             {
-                                message.blocked = true;
-                            } else if let Some(seconds) = server_message.smart {
-                                let nick = match source.nick() {
-                                    Some(nick) => Some(nick.clone()),
-                                    None => message.plain().and_then(|s| {
-                                        s.split(' ').nth(1).map(|nick| {
-                                            Nick::from_str(nick, casemapping)
-                                        })
-                                    }),
-                                };
+                                Some(nick) => Some(nick.clone()),
+                                None => message.plain().and_then(|s| {
+                                    s.split(' ').nth(1).map(|nick| {
+                                        Nick::from_str(nick, casemapping)
+                                    })
+                                }),
+                            };
 
-                                if let Some(nick) = nick {
-                                    message.blocked = smart_filter_message(
-                                        message,
-                                        &seconds,
-                                        last_seen.get(&nick),
-                                    );
-                                }
+                            if let Some(nick) = nick {
+                                message.blocked = smart_filter_message(
+                                    message,
+                                    &seconds,
+                                    last_seen.get(&nick),
+                                );
                             }
                         }
                     }
@@ -864,17 +896,14 @@ impl Manager {
                     message::Source::Internal(
                         message::source::Internal::Status(status),
                     ) => {
-                        if let Some(internal_message) =
-                            buffer_config.internal_messages.get(status)
+                        if !buffer_config.internal_messages.enabled(status) {
+                            message.blocked = true;
+                        } else if let Some(seconds) =
+                            buffer_config.internal_messages.smart(status)
                         {
-                            if !internal_message.enabled {
-                                message.blocked = true;
-                            } else if let Some(seconds) = internal_message.smart
-                            {
-                                message.blocked = smart_filter_internal_message(
-                                    message, &seconds,
-                                );
-                            }
+                            message.blocked = smart_filter_internal_message(
+                                message, &seconds,
+                            );
                         }
                     }
                     _ => (),
@@ -971,6 +1000,18 @@ fn with_limit<'a>(
         Some(Limit::Since(timestamp)) => messages
             .skip_while(|message| message.server_time < timestamp)
             .collect(),
+        Some(Limit::Around(n, hash)) => {
+            let collected = messages.collect::<Vec<_>>();
+            let length = collected.len();
+            let center = collected
+                .iter()
+                .position(|m| m.hash == hash)
+                .unwrap_or(length.saturating_sub(1));
+            let start =
+                center.saturating_sub(n / 2).min(length.saturating_sub(n));
+            let end = (start + n).min(length);
+            collected[start..end].to_vec()
+        }
         None => messages.collect(),
     }
 }
@@ -1094,19 +1135,16 @@ impl Data {
                         message::Source::Internal(
                             message::source::Internal::Status(status),
                         ) => {
-                            if let Some(internal_message) =
-                                buffer_config.internal_messages.get(status)
+                            if !buffer_config.internal_messages.enabled(status)
                             {
-                                if !internal_message.enabled {
-                                    return None;
-                                } else if let Some(seconds) =
-                                    internal_message.smart
-                                {
-                                    return (!smart_filter_internal_message(
-                                        message, &seconds,
-                                    ))
-                                    .then_some(message);
-                                }
+                                return None;
+                            } else if let Some(seconds) =
+                                buffer_config.internal_messages.smart(status)
+                            {
+                                return (!smart_filter_internal_message(
+                                    message, &seconds,
+                                ))
+                                .then_some(message);
                             }
 
                             Some(message)
@@ -1242,12 +1280,12 @@ impl Data {
         let has_more_older_messages = first_without_limit
             .zip(first_with_limit)
             .is_some_and(|(without_limit, with_limit)| {
-                without_limit.server_time < with_limit.server_time
+                without_limit.hash != with_limit.hash
             });
         let has_more_newer_messages = last_without_limit
             .zip(last_with_limit)
             .is_some_and(|(without_limit, with_limit)| {
-                without_limit.server_time > with_limit.server_time
+                without_limit.hash != with_limit.hash
             });
 
         Some(history::View {
@@ -1481,6 +1519,17 @@ impl Data {
     ) {
         if let Some(history) = self.map.get_mut(kind) {
             history.hide_preview(message, url);
+        }
+    }
+
+    fn show_preview(
+        &mut self,
+        kind: &history::Kind,
+        message: message::Hash,
+        url: &url::Url,
+    ) {
+        if let Some(history) = self.map.get_mut(kind) {
+            history.show_preview(message, url);
         }
     }
 }

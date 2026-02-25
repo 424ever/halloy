@@ -21,12 +21,68 @@ impl Shortcut {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KeyBinds(Vec<KeyBind>);
+
+impl KeyBinds {
+    pub fn iter(&self) -> impl Iterator<Item = &KeyBind> {
+        self.0.iter()
+    }
+
+    pub fn primary(&self) -> Option<&KeyBind> {
+        self.0.first()
+    }
+}
+
+impl From<KeyBind> for KeyBinds {
+    fn from(value: KeyBind) -> Self {
+        match value {
+            KeyBind::Bind { .. } => Self(vec![value]),
+            KeyBind::Unbind => Self::default(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for KeyBinds {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Input {
+            Single(KeyBind),
+            Multiple(Vec<KeyBind>),
+        }
+
+        let keybinds = match Input::deserialize(deserializer)? {
+            Input::Single(key_bind) => return Ok(Self::from(key_bind)),
+            Input::Multiple(key_binds) => key_binds,
+        };
+
+        let mut unique = Vec::with_capacity(keybinds.len());
+
+        for key_bind in keybinds {
+            if matches!(key_bind, KeyBind::Unbind) || unique.contains(&key_bind)
+            {
+                continue;
+            }
+
+            unique.push(key_bind);
+        }
+
+        Ok(Self(unique))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     MoveUp,
     MoveDown,
     MoveLeft,
     MoveRight,
+    NewHorizontalBuffer,
+    NewVerticalBuffer,
     CloseBuffer,
     MaximizeBuffer,
     RestoreBuffer,
@@ -54,6 +110,11 @@ pub enum Command {
 }
 
 macro_rules! default {
+    ($name:ident) => {
+        pub fn $name() -> KeyBind {
+            KeyBind::Unbind
+        }
+    };
     ($name:ident, $k:tt) => {
         pub fn $name() -> KeyBind {
             KeyBind::Bind {
@@ -198,6 +259,8 @@ impl KeyBind {
     default!(move_down, ArrowDown, COMMAND | ALT);
     default!(move_left, ArrowLeft, COMMAND | ALT);
     default!(move_right, ArrowRight, COMMAND | ALT);
+    default!(new_horizontal_buffer);
+    default!(new_vertical_buffer);
     default!(close_buffer, "w", COMMAND);
     default!(maximize_buffer, ArrowUp, COMMAND | SHIFT);
     default!(restore_buffer, ArrowDown, COMMAND | SHIFT);
@@ -226,6 +289,10 @@ impl KeyBind {
     default!(cycle_previous_unread_buffer, "`", CTRL | SHIFT);
     // Command + m is minimize in macOS
     default!(mark_as_read, "m", COMMAND | SHIFT);
+    #[cfg(target_os = "linux")]
+    default!(quit_application, "q", CTRL);
+    #[cfg(not(target_os = "linux"))]
+    default!(quit_application);
 }
 
 impl From<(keyboard::Key, keyboard::Modifiers)> for KeyBind {

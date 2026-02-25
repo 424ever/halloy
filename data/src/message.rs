@@ -1988,6 +1988,29 @@ fn target(
                 source: Source::Action(None),
             })
         }
+        Command::Numeric(
+            ERR_NOSUCHCHANNEL | ERR_TOOMANYCHANNELS | ERR_CHANNELISFULL
+            | ERR_INVITEONLYCHAN | ERR_BANNEDFROMCHAN | ERR_BADCHANNELKEY
+            | ERR_BADCHANMASK,
+            params,
+        ) => {
+            let channel = target::Channel::parse(
+                params.get(1)?,
+                chantypes,
+                statusmsg,
+                casemapping,
+            )
+            .ok()?;
+
+            Some(Target::Channel {
+                channel,
+                source: Source::Server(Some(source::Server::new(
+                    Kind::StandardReply(StandardReply::Fail),
+                    None,
+                    None,
+                ))),
+            })
+        }
         Command::PRIVMSG(target, text) | Command::NOTICE(target, text) => {
             let is_action = is_action(&text);
 
@@ -2262,7 +2285,10 @@ fn content<'a>(
                     format!(
                         "⟵ {} has left the channel{text}",
                         user.formatted(
-                            config.buffer.server_messages.part.username_format
+                            config
+                                .buffer
+                                .server_messages
+                                .username_format(Some(Kind::Part))
                         )
                     ),
                     &user,
@@ -2292,8 +2318,7 @@ fn content<'a>(
                                 config
                                     .buffer
                                     .server_messages
-                                    .join
-                                    .username_format
+                                    .username_format(Some(Kind::Join))
                             )
                         ),
                         &user,
@@ -2858,6 +2883,7 @@ pub enum Limit {
     Top(usize),
     Bottom(usize),
     Since(DateTime<Utc>),
+    Around(usize, Hash),
 }
 
 pub fn is_action(text: &str) -> bool {

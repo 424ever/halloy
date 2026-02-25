@@ -28,7 +28,9 @@ pub use self::sidebar::Sidebar;
 use crate::appearance::theme::Styles;
 use crate::appearance::{self, Appearance};
 use crate::audio::{self};
-use crate::serde::deserialize_positive_integer_maybe;
+use crate::serde::{
+    deserialize_positive_float_maybe, deserialize_positive_integer_maybe,
+};
 use crate::server::{ConfigMap as ServerMap, ServerName};
 use crate::{Theme, environment};
 
@@ -52,7 +54,7 @@ pub mod sidebar;
 const CONFIG_TEMPLATE: &str = include_str!("../../config.toml");
 const DEFAULT_THEME_NAME: &str = "ferra";
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Config {
     pub appearance: Appearance,
     pub context_menu: ContextMenu,
@@ -73,6 +75,34 @@ pub struct Config {
     pub ctcp: Ctcp,
     pub logs: Logs,
     pub platform_specific: PlatformSpecific,
+    pub check_for_update_on_launch: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            appearance: Appearance::default(),
+            context_menu: ContextMenu::default(),
+            servers: ServerMap::default(),
+            proxy: None,
+            font: Font::default(),
+            scale_factor: ScaleFactor::default(),
+            buffer: Buffer::default(),
+            pane: Pane::default(),
+            sidebar: Sidebar::default(),
+            keyboard: Keyboard::default(),
+            notifications: Notifications::default(),
+            file_transfer: FileTransfer::default(),
+            tooltips: true,
+            preview: Preview::default(),
+            highlights: Highlights::default(),
+            actions: Actions::default(),
+            ctcp: Ctcp::default(),
+            logs: Logs::default(),
+            platform_specific: PlatformSpecific::default(),
+            check_for_update_on_launch: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -120,6 +150,8 @@ pub struct Font {
     pub family: Option<String>,
     #[serde(deserialize_with = "deserialize_positive_integer_maybe")]
     pub size: Option<u8>,
+    #[serde(deserialize_with = "deserialize_positive_float_maybe")]
+    pub line_height: Option<f32>,
     #[serde(deserialize_with = "deserialize_font_weight_from_string")]
     pub weight: font::Weight,
     #[serde(deserialize_with = "deserialize_optional_font_weight_from_string")]
@@ -134,6 +166,7 @@ impl Default for Font {
         Self {
             family: None,
             size: None,
+            line_height: None,
             weight: font::Weight::Normal,
             bold_weight: None,
             only_emojis_size: None,
@@ -325,6 +358,7 @@ impl Config {
             pub ctcp: Ctcp,
             pub logs: Logs,
             pub platform_specific: PlatformSpecific,
+            pub check_for_update_on_launch: bool,
         }
 
         impl Default for Configuration {
@@ -349,6 +383,7 @@ impl Config {
                     ctcp: Ctcp::default(),
                     logs: Logs::default(),
                     platform_specific: PlatformSpecific::default(),
+                    check_for_update_on_launch: true,
                 }
             }
         }
@@ -383,6 +418,7 @@ impl Config {
             ctcp,
             logs,
             platform_specific,
+            check_for_update_on_launch,
         } = serde_ignored::deserialize(config, |ignored| {
             log::warn!("[config.toml] Ignoring unknown setting: {ignored}");
         })
@@ -414,6 +450,7 @@ impl Config {
             ctcp,
             logs,
             platform_specific,
+            check_for_update_on_launch,
         })
     }
 
