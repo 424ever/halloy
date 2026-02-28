@@ -552,13 +552,7 @@ impl Config {
             return;
         }
 
-        // Generate a unique nick
-        let rand_nick = random_nickname();
-
-        // Replace placeholder nick with unique nick
-        let config_string =
-            CONFIG_TEMPLATE.replace("__NICKNAME__", rand_nick.as_str());
-        let config_bytes = config_string.as_bytes();
+        let config_bytes = CONFIG_TEMPLATE.as_bytes();
 
         // Create configuration path.
         let config_path = Self::config_dir().join("config.toml");

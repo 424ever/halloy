@@ -2,8 +2,24 @@
 #
 # For a complete list of available options,
 # please visit https://halloy.chat/configuration.html
+# 
+# For help setting username and password,
+# see https://osu.ppy.sh/wiki/en/Community/Internet_Relay_Chat
+[buffer.server_messages.join]
+enabled = false
 
-[servers.liberachat]
-nickname = "__NICKNAME__"
-server = "irc.libera.chat"
-channels = ["#halloy"]
+[buffer.server_messages.part]
+enabled = false 
+
+[buffer.server_messages.quit]
+enabled = false 
+
+[servers.ppy]
+nickname = "YOURUSERHERE"
+username = "YOURUSERHERE"
+password = "YOURPASSWORDHERE"
+server = "irc.ppy.sh"
+port = 6667
+use_tls = false
+channels = ["#osu"]
+

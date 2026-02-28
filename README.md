@@ -17,3 +17,4 @@ cargo install --locked \
 The changes made in the fork:
 
 - Allow connecting to irc.ppy.sh (squidowl/halloy#1391)
+- Updated default config, which sets up a connection to irc.ppy.sh
