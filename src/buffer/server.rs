@@ -62,7 +62,7 @@ pub fn view<'a>(
             None,
             config,
             theme,
-            move |message: &'a data::Message, _, _, _, _| {
+            move |message: &'a data::Message, _, _, _, _, _| {
                 let timestamp = config
                     .buffer
                     .format_timestamp(&message.server_time)
@@ -219,6 +219,7 @@ impl Server {
                     message,
                     false,
                     scroll_view::Kind::Server(&self.server),
+                    Some(&self.buffer),
                     history,
                     clients,
                     config,

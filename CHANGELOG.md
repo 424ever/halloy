@@ -1,5 +1,41 @@
 # Unreleased
 
+# 2026.4 (2026-03-03)
+
+Added:
+
+- Support for the IRCv3 [`react`](https://ircv3.net/specs/client-tags/react.html) client tag.
+- Correctly record window size if window is maximized
+
+Changed:
+
+- Notification toasts can now use a subtitle on supported operating systems
+- New about screen accessible from the user menu in the sidebar
+- Added setting to mark focused buffers as read on incoming messages
+- Formatting inside code spans is now ignored in order to prevent breaks in code span styling
+- Links inside code spans are not detected in order to prevent breaks in code span styling
+- Setting to hide consecutive timestamps (`buffer.timestamp.hide_consecutive`)
+
+Fixed:
+
+- High CPU usage when opening very large buffers
+- Window state is saved even if altered shortly before quitting
+- Default dimmed value for server messages no longer overrides `dimmed = false` set for individual server message kinds
+- Issue where context menu items would not respond to clicks
+- Filters are loaded on first connection to server via bouncer-networks and updated on config file reload
+- Compatibility with ZNC's backlog service
+- Markdown formatting inside code spans is properly ignored
+
+Security:
+
+- Improve link preview management to mitigate spam-driven resource abuse
+
+Thanks:
+
+- Contributions: @melocene, @4e554c4c, @TheOneric, @bmndc, @RealKindOne, @englut
+- Feature requests: @deepspaceaxolotl, @RoboDanjal
+- Bug reports: @barretgoat, @TheOneric, @Erroneuz, @BKVad1m. @englut, @whitequark, petteri, xtracked
+
 # 2026.3 (2026-02-24)
 
 Added:

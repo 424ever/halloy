@@ -12,6 +12,7 @@ use iced::{Color, Length, alignment};
 use super::context_menu::{self, Context};
 use super::scroll_view::LayoutMessage;
 use crate::buffer::scroll_view::Message;
+use crate::widget::reaction_row::reaction_row;
 use crate::widget::{
     Element, Marker, message_content, message_marker, selectable_text, tooltip,
 };
@@ -137,6 +138,7 @@ impl<'a> ChannelQueryLayout<'a> {
     fn format_timestamp(
         &self,
         message: &'a data::Message,
+        hide_timestamp: bool,
     ) -> Option<Element<'a, Message>> {
         if let message::Source::Internal(message::source::Internal::Condensed(
             end_server_time,
@@ -177,7 +179,8 @@ impl<'a> ChannelQueryLayout<'a> {
                             self.config,
                             self.theme,
                         )
-                        .map(Message::ContextMenu)
+                        .map(Message::ContextMenu),
+                        selectable_text(" "),
                     ]
                     .into()
                 })
@@ -186,18 +189,31 @@ impl<'a> ChannelQueryLayout<'a> {
                 .buffer
                 .format_timestamp(&message.server_time)
                 .map(|timestamp| {
-                    context_menu::timestamp(
-                        selectable_text(timestamp)
-                            .style(theme::selectable_text::timestamp)
-                            .font_maybe(
-                                theme::font_style::timestamp(self.theme)
-                                    .map(font::get),
-                            ),
-                        &message.server_time,
-                        self.config,
-                        self.theme,
-                    )
-                    .map(Message::ContextMenu)
+                    if hide_timestamp {
+                        let width = font::width_from_chars(
+                            timestamp.chars().count() + 1,
+                            &self.config.font,
+                        );
+
+                        return Space::new().width(width).into();
+                    }
+
+                    row![
+                        context_menu::timestamp(
+                            selectable_text(timestamp)
+                                .style(theme::selectable_text::timestamp)
+                                .font_maybe(
+                                    theme::font_style::timestamp(self.theme)
+                                        .map(font::get),
+                                ),
+                            &message.server_time,
+                            self.config,
+                            self.theme,
+                        )
+                        .map(Message::ContextMenu),
+                        selectable_text(" "),
+                    ]
+                    .into()
                 })
         }
     }
@@ -358,7 +374,7 @@ impl<'a> ChannelQueryLayout<'a> {
             }
         });
 
-        let message_content = message_content::with_context(
+        let mut message_content = message_content::with_context(
             &message.content,
             self.server,
             self.chantypes,
@@ -391,6 +407,32 @@ impl<'a> ChannelQueryLayout<'a> {
             },
             self.config,
         );
+        if self.config.buffer.channel.message.show_emoji_reacts
+            && !message.reactions.is_empty()
+        {
+            let mut on_react = None;
+            let mut on_unreact = None;
+            if let Some(msgid) = message.id.as_ref() {
+                on_react = Some(|text: &'a str| Message::Reacted {
+                    msgid: msgid.clone(),
+                    text: text.to_owned(),
+                });
+                on_unreact = Some(|text: &'a str| Message::Unreacted {
+                    msgid: msgid.clone(),
+                    text: text.to_owned(),
+                });
+            }
+
+            let reactions = reaction_row(
+                message,
+                self.target.our_user().map(|user| user.nickname()),
+                self.config.font.size.map_or(theme::TEXT_SIZE, f32::from),
+                on_react,
+                on_unreact,
+            );
+            message_content =
+                column![message_content, reactions].spacing(2).into();
+        }
 
         let content = if not_sent {
             let font_size = 0.85
@@ -678,16 +720,17 @@ impl<'a> LayoutMessage<'a> for ChannelQueryLayout<'a> {
         right_aligned_width: Option<f32>,
         max_prefix_width: Option<f32>,
         range_timestamp_excess_width: Option<f32>,
+        hide_timestamp: bool,
         hide_nickname: bool,
     ) -> Option<Element<'a, Message>> {
-        let timestamp = self.format_timestamp(message);
+        let timestamp = self.format_timestamp(message, hide_timestamp);
         let prefixes = self.format_prefixes(
             message,
             right_aligned_width,
             max_prefix_width,
         );
 
-        let row = row![timestamp, selectable_text(" "), prefixes];
+        let row = row![timestamp, prefixes];
 
         let (middle, content): (Element<'a, Message>, Element<'a, Message>) =
             match message.target.source() {

@@ -28,10 +28,10 @@ pub fn message(input: &str) -> Result<Message, Error> {
             opt(source),
             command,
         )),
-        // Discard addtl. \r if it exists, allow whitespace before
+        // Discard addtl. \r or \n if it exists, allow whitespace before
         preceded(
             many0(char(' ')),
-            alt((preceded(char('\r'), crlf), line_ending)),
+            alt((preceded(one_of("\r\n"), crlf), line_ending)),
         ),
     ));
 
@@ -411,6 +411,22 @@ mod test {
                         Some("*".to_string()),
                     ),
                 },
+            ),
+            // Extra \n sent by ZNC’s backlog service
+            (
+                Vec::from(b"@time=2026-02-24T12:34:31.543Z :otheruser!znc@znc.in PRIVMSG OtherUser :[21:15:00] <OtherUser> text of old privmsg\n\r\n"),
+                Message {
+                    tags: tags!["time" => "2026-02-24T12:34:31.543Z"],
+                    source: Some(Source::User(User {
+                        nickname: "otheruser".into(),
+                        username: Some("znc".into()),
+                        hostname: Some("znc.in".into())
+                    })),
+                    command: Command::PRIVMSG(
+                        "OtherUser".to_string(),
+                        "[21:15:00] <OtherUser> text of old privmsg".to_string()
+                    )
+                }
             ),
             // Space between message and crlf sent by DejaToons
             (

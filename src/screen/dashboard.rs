@@ -17,7 +17,7 @@ use data::rate_limit::TokenPriority;
 use data::target::{self, Target};
 use data::{
     Config, Notification, Server, User, Version, client, command, config,
-    environment, file_transfer, history, preview, server, stream,
+    environment, file_transfer, history, preview, reaction, server, stream,
 };
 use iced::widget::pane_grid::{self, PaneGrid};
 use iced::widget::{Space, column, container, row};
@@ -89,6 +89,11 @@ pub enum Event {
     IrcError(anyhow::Error),
     Exit,
     OpenUrl(String, bool),
+    OpenAbout {
+        version: String,
+        commit: String,
+        system_information: Option<iced::system::Information>,
+    },
     OpenServer(String),
     ImagePreview(PathBuf, url::Url),
     ToggleFullscreen,
@@ -103,6 +108,8 @@ impl Dashboard {
         let (main_panes, pane) =
             pane_grid::State::new(Pane::new(Buffer::Empty));
 
+        let (sidebar, sidebar_task) = Sidebar::new();
+
         let mut dashboard = Dashboard {
             panes: Panes {
                 main_window: main_window.id,
@@ -114,7 +121,7 @@ impl Dashboard {
                 pane,
             },
             focus_history: VecDeque::new(),
-            side_menu: Sidebar::new(),
+            side_menu: sidebar,
             history: history::Manager::default(),
             last_changed: None,
             command_bar: None,
@@ -127,8 +134,9 @@ impl Dashboard {
         };
 
         let command = dashboard.track(None);
+        let sidebar_task = sidebar_task.map(Message::Sidebar);
 
-        (dashboard, command)
+        (dashboard, Task::batch(vec![command, sidebar_task]))
     }
 
     pub fn restore(
@@ -534,6 +542,18 @@ impl Dashboard {
                         let _ = open_url::open(WIKI_WEBSITE);
                         (Task::none(), None)
                     }
+                    sidebar::Event::OpenAbout {
+                        version,
+                        commit,
+                        system_information,
+                    } => (
+                        Task::none(),
+                        Some(Event::OpenAbout {
+                            version,
+                            commit,
+                            system_information,
+                        }),
+                    ),
                     sidebar::Event::MarkServerAsRead(server) => {
                         mark_server_as_read(server, &mut self.history, clients);
 
@@ -564,13 +584,10 @@ impl Dashboard {
 
                         controllers.connect(&server);
 
-                        for bouncer_network in servers.keys() {
-                            if bouncer_network
-                                .parent()
-                                .is_some_and(|parent| parent == server)
-                            {
-                                controllers.connect(bouncer_network);
-                            }
+                        for bouncer_network in
+                            servers.get_bouncer_networks(&server)
+                        {
+                            controllers.connect(bouncer_network);
                         }
 
                         (Task::none(), None)
@@ -2834,6 +2851,46 @@ impl Dashboard {
         }
     }
 
+    pub fn record_reaction(
+        &mut self,
+        server: &Server,
+        reaction: reaction::Context,
+    ) -> Task<Message> {
+        if let Some(task) = self.history.record_reaction(server, reaction) {
+            Task::perform(task, Message::History)
+        } else {
+            Task::none()
+        }
+    }
+
+    pub fn mark_as_read_if_focused_and_at_bottom(
+        &mut self,
+        kind: &history::Kind,
+        clients: &mut client::Map,
+        focused_window: Option<window::Id>,
+    ) {
+        let should_mark =
+            self.get_focused().is_some_and(|(window, _, pane)| {
+                let is_focused_window = focused_window == Some(window);
+                let is_at_bottom =
+                    pane.buffer.is_scrolled_to_bottom() == Some(true);
+                let focused_kind =
+                    pane.buffer.data().and_then(history::Kind::from_buffer);
+                let is_same_buffer = focused_kind.as_ref() == Some(kind);
+
+                is_focused_window && is_at_bottom && is_same_buffer
+            });
+
+        if should_mark {
+            mark_as_read(
+                kind.clone(),
+                &mut self.history,
+                clients,
+                TokenPriority::User,
+            );
+        }
+    }
+
     pub fn block_and_record_message(
         &mut self,
         server: &Server,
@@ -3620,11 +3677,13 @@ impl Dashboard {
                 }
             });
 
+        let (sidebar, sidebar_task) = Sidebar::new();
+
         let mut dashboard = Self {
             panes,
             focus,
             focus_history: VecDeque::from([focus.pane]),
-            side_menu: Sidebar::new(),
+            side_menu: sidebar,
             history: history::Manager::default(),
             last_changed: None,
             command_bar: None,
@@ -3636,7 +3695,7 @@ impl Dashboard {
             buffer_settings: data.buffer_settings.clone(),
         };
 
-        let mut tasks = vec![];
+        let mut tasks = vec![sidebar_task.map(Message::Sidebar)];
 
         for pane in data.popout_panes {
             // Popouts are only a single pane

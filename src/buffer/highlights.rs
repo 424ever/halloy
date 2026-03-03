@@ -48,7 +48,8 @@ pub fn view<'a>(
             None,
             config,
             theme,
-            move |message: &'a data::Message, _, _, _, _| match &message.target
+            move |message: &'a data::Message, _, _, _, _, _| match &message
+                .target
             {
                 message::Target::Highlights {
                     server,
@@ -302,8 +303,8 @@ impl Highlights {
     pub fn update(
         &mut self,
         message: Message,
-        history: &history::Manager,
-        clients: &data::client::Map,
+        history: &mut history::Manager,
+        clients: &mut data::client::Map,
         config: &Config,
     ) -> (Task<Message>, Option<Event>) {
         match message {
@@ -312,6 +313,7 @@ impl Highlights {
                     message,
                     false,
                     scroll_view::Kind::Highlights,
+                    None,
                     history,
                     clients,
                     config,
