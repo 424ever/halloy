@@ -2,7 +2,7 @@
 
 My fork of squidowl/halloy
 
-Currently up-to-date to version 2026.3
+Currently up-to-date to version 2026.4
 
 ## Installing
 
